@@ -9,7 +9,8 @@ the patch.
 |---|---|
 | [`BUG_REPORT.md`](./BUG_REPORT.md) | Full audit. 9 findings, each reproduced against a live server with real console output, ranked by severity, with impact on the two user stories. |
 | [`fixes.patch`](./fixes.patch) | Unified diff fixing findings 1, 2, 4, 5, 6 and 8. Additive-only for `transfer.ts`. Does not implement either user story. |
-| [`AI_DEBUG_PROMPT.md`](./AI_DEBUG_PROMPT.md) | Two prompts for pointing another AI assistant at this repo — a blind audit, and a shorter pre-implementation review. |
+| [`AI_DEBUG_PROMPT.md`](./AI_DEBUG_PROMPT.md) | Two generic prompts for pointing any AI assistant at this repo — a blind audit, and a shorter pre-implementation review. |
+| [`CLINE_PROMPT.md`](./CLINE_PROMPT.md) | Cline-specific prompt: Plan mode, 110K context budget, audit → fix → implement → tests → submission. Includes the submission-script gotchas. |
 
 ## The headline
 
