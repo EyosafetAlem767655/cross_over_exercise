@@ -1,0 +1,32 @@
+{
+  "name": "event-ticketing",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "build": "cd backend && npm run build && cd ../frontend && npm run build",
+    "db:setup": "cd backend && npm run db:push && npm run db:seed",
+    "db:reset": "cd backend && npm run db:reset",
+    "submit": "tsx submit.ts",
+    "check:format": "prettier --check .",
+    "fix:format": "prettier --write .",
+    "check:types:backend": "cd backend && npx tsc --noEmit",
+    "check:types:frontend": "cd frontend && npx tsc --noEmit",
+    "check:types": "npm run check:types:backend && npm run check:types:frontend",
+    "lint:frontend": "cd frontend && npm run lint"
+  },
+  "devDependencies": {
+    "@types/prompts": "^2.4.9",
+    "prettier": "^3.4.0",
+    "axios": "^1.6.7",
+    "concurrently": "^9.0.1",
+    "form-data": "^4.0.0",
+    "jszip": "^3.10.1",
+    "prompts": "^2.4.2",
+    "tsx": "^4.19.3",
+    "typescript": "^4.3.5"
+  }
+}

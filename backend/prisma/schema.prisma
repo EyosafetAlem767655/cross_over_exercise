@@ -1,0 +1,122 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String    @id @default(cuid())
+  email      String    @unique
+  password   String
+  name       String
+  role       String    @default("ATTENDEE") // ORGANIZER or ATTENDEE
+  isVerified Boolean   @default(false)
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  organizedEvents Event[]   @relation("OrganizerEvents")
+  bookings        Booking[]
+
+  @@index([email])
+}
+
+model Event {
+  id                String   @id @default(cuid())
+  name              String
+  description       String
+  date              DateTime
+  time              String
+  venue             String
+  imageUrl          String?
+  artistInfo        String?
+  category          String   @default("OTHER") // MUSIC, SPORTS, CONFERENCE, WORKSHOP, COMEDY, OTHER
+  price             Float
+  capacity          Int
+  soldCount         Int      @default(0)
+  status            String   @default("DRAFT") // DRAFT, PUBLISHED, CANCELLED
+  refundPolicy      String   @default("TIERED") // FULL_REFUND, TIERED, NO_REFUND
+  serviceFeePercent Float    @default(5)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organizerId String
+  organizer   User       @relation("OrganizerEvents", fields: [organizerId], references: [id])
+  bookings    Booking[]
+  seatTiers   SeatTier[]
+  promoCodes  PromoCode[]
+
+  @@index([status])
+  @@index([date])
+  @@index([category])
+}
+
+model SeatTier {
+  id        String   @id @default(cuid())
+  name      String
+  price     Float
+  capacity  Int
+  soldCount Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  eventId  String
+  event    Event     @relation(fields: [eventId], references: [id])
+  bookings Booking[]
+
+  @@index([eventId])
+}
+
+model PromoCode {
+  id               String    @id @default(cuid())
+  code             String
+  discountType     String    // PERCENTAGE or FIXED
+  discountValue    Float
+  usageLimit       Int?      // null = unlimited
+  usageCount       Int       @default(0)
+  isActive         Boolean   @default(true)
+  validFrom        DateTime? // null = immediately valid
+  validUntil       DateTime? // null = never expires
+  minPurchaseAmount Float?   // null = no minimum
+  maxDiscountAmount Float?   // null = no cap (for percentage codes)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  eventId  String
+  event    Event     @relation(fields: [eventId], references: [id])
+  bookings Booking[]
+
+  @@unique([eventId, code])
+  @@index([eventId])
+}
+
+model Booking {
+  id             String    @id @default(cuid())
+  ticketCode     String    @unique @default(cuid())
+  qrCodeData     String    @unique
+  status         String    @default("CONFIRMED") // CONFIRMED, CANCELLED, CHECKED_IN, WAITLISTED
+  pricePaid      Float     @default(0)
+  discountAmount Float     @default(0)
+  refundAmount   Float     @default(0)
+  cancelledAt    DateTime?
+  checkedInAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  userId      String
+  user        User       @relation(fields: [userId], references: [id])
+  eventId     String
+  event       Event      @relation(fields: [eventId], references: [id])
+  seatTierId  String?
+  seatTier    SeatTier?  @relation(fields: [seatTierId], references: [id])
+  promoCodeId String?
+  promoCode   PromoCode? @relation(fields: [promoCodeId], references: [id])
+
+  @@index([ticketCode])
+  @@index([qrCodeData])
+  @@index([userId])
+  @@index([eventId])
+}

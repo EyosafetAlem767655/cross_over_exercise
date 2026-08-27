@@ -1,0 +1,40 @@
+{
+  "name": "Event Ticketing Platform",
+  "build": {
+    "context": ".",
+    "dockerfile": "Dockerfile"
+  },
+  "postCreateCommand": "npm run install:all && cp backend/.env.example backend/.env && npm run db:setup && echo 'Setup complete! Run: npm run dev'",
+  "postStartCommand": "npm run dev",
+  "forwardPorts": [3000, 4000],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "saoudrizwan.claude-dev@3.34.0",
+        "prisma.prisma",
+        "bradlc.vscode-tailwindcss",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint"
+      ],
+      "settings": {
+        "chat.disableAIFeatures": true,
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "files.exclude": {
+          ".devcontainer": true,
+          ".gitignore": true
+        }
+      }
+    }
+  },
+  "portsAttributes": {
+    "3000": {
+      "label": "Frontend",
+      "onAutoForward": "notify"
+    },
+    "4000": {
+      "label": "Backend API",
+      "onAutoForward": "silent"
+    }
+  }
+}

@@ -1,0 +1,332 @@
+diff --git a/backend/prisma/seed.ts b/backend/prisma/seed.ts
+index 73e1fb7..c5a25a8 100644
+--- a/backend/prisma/seed.ts
++++ b/backend/prisma/seed.ts
+@@ -15,6 +15,28 @@ function generateQRData(ticketCode: string): string {
+   });
+ }
+ 
++/**
++ * A waitlist row is not a ticket. The Booking model requires a unique
++ * ticketCode/qrCodeData, so we store a marker that is deliberately NOT valid
++ * QR ticket JSON — a scanner cannot parse it, let alone check it in.
++ */
++function generateWaitlistMarker(ticketCode: string): string {
++  return `WAITLIST:${ticketCode}`;
++}
++
++/**
++ * Seed dates are relative to the run date, not hardcoded calendar dates.
++ * Hardcoded dates silently rot: once they slip into the past, every event is
++ * unbookable and uncancellable, and the sold-out/waitlist scenarios below
++ * cannot be exercised at all.
++ */
++function daysFromNow(days: number): Date {
++  const d = new Date();
++  d.setHours(12, 0, 0, 0);
++  d.setDate(d.getDate() + days);
++  return d;
++}
++
+ async function main() {
+   console.log("Seeding database...\n");
+ 
+@@ -101,7 +123,7 @@ async function main() {
+     {
+       name: "Summer Rock Festival 2026",
+       description: "The biggest rock festival of the summer! Join us for three days of amazing music, great food, and unforgettable memories.",
+-      date: new Date("2026-07-15"),
++      date: daysFromNow(120),
+       time: "18:00",
+       venue: "Central Park Amphitheater, New York",
+       imageUrl: "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=800",
+@@ -117,7 +139,7 @@ async function main() {
+     {
+       name: "JavaScript Mastery Workshop",
+       description: "Deep dive into modern JavaScript development. Learn about ES2026 features, async patterns, and performance optimization.",
+-      date: new Date("2026-03-20"),
++      date: daysFromNow(25),
+       time: "09:00",
+       venue: "Tech Hub Conference Center, San Francisco",
+       imageUrl: "https://images.unsplash.com/photo-1517694712202-14dd9538aa97?w=800",
+@@ -133,7 +155,7 @@ async function main() {
+     {
+       name: "Jazz Night Under the Stars",
+       description: "An intimate evening of smooth jazz in a beautiful outdoor setting. Enjoy world-class musicians and fine wine.",
+-      date: new Date("2026-04-10"),
++      date: daysFromNow(45),
+       time: "20:00",
+       venue: "Botanical Gardens, Chicago",
+       imageUrl: "https://images.unsplash.com/photo-1415201364774-f6f0bb35f28f?w=800",
+@@ -149,7 +171,7 @@ async function main() {
+     {
+       name: "Startup Pitch Competition",
+       description: "Watch innovative startups compete for $100,000 in funding. Network with investors and entrepreneurs.",
+-      date: new Date("2026-05-05"),
++      date: daysFromNow(70),
+       time: "14:00",
+       venue: "Innovation Center, Austin",
+       imageUrl: "https://images.unsplash.com/photo-1475721027785-f74eccf877e2?w=800",
+@@ -165,7 +187,7 @@ async function main() {
+     {
+       name: "Photography Workshop for Beginners",
+       description: "Learn the fundamentals of photography in this hands-on workshop. Covers camera basics, composition, and lighting.",
+-      date: new Date("2026-06-12"),
++      date: daysFromNow(95),
+       time: "10:00",
+       venue: "Art Studio Downtown, Seattle",
+       imageUrl: "https://images.unsplash.com/photo-1542038784456-1ea8e935640e?w=800",
+@@ -181,7 +203,7 @@ async function main() {
+     {
+       name: "EDM Beach Party",
+       description: "Dance the night away at the hottest beach party of the year. Top DJs, incredible light shows, and ocean vibes.",
+-      date: new Date("2026-08-01"),
++      date: daysFromNow(140),
+       time: "21:00",
+       venue: "Miami Beach, South Beach Area",
+       imageUrl: "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=800",
+@@ -197,7 +219,7 @@ async function main() {
+     {
+       name: "Wine Tasting Experience",
+       description: "Discover exquisite wines from around the world. Guided tasting with sommelier and cheese pairings included.",
+-      date: new Date("2026-04-25"),
++      date: daysFromNow(60),
+       time: "19:00",
+       venue: "Grand Vineyard Estate, Napa Valley",
+       imageUrl: "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=800",
+@@ -213,7 +235,7 @@ async function main() {
+     {
+       name: "Stand-Up Comedy Night",
+       description: "Laugh out loud with the funniest comedians in the country. Two hours of non-stop entertainment.",
+-      date: new Date("2026-05-18"),
++      date: daysFromNow(80),
+       time: "20:30",
+       venue: "The Laugh Factory, Los Angeles",
+       imageUrl: "https://images.unsplash.com/photo-1527224538127-2104bb71c51b?w=800",
+@@ -229,7 +251,7 @@ async function main() {
+     {
+       name: "Marathon Training Bootcamp",
+       description: "Intensive 1-day training session for aspiring marathon runners. Learn proper technique and nutrition strategies.",
+-      date: new Date("2026-03-08"),
++      date: daysFromNow(14),
+       time: "06:00",
+       venue: "Olympic Training Center, Denver",
+       imageUrl: "https://images.unsplash.com/photo-1552674605-db6ffd4facb5?w=800",
+@@ -245,7 +267,7 @@ async function main() {
+     {
+       name: "AI & Machine Learning Conference",
+       description: "Explore the latest breakthroughs in AI. Keynotes from industry leaders, hands-on workshops, and networking.",
+-      date: new Date("2026-09-22"),
++      date: daysFromNow(180),
+       time: "08:30",
+       venue: "Boston Convention Center, Boston",
+       imageUrl: "https://images.unsplash.com/photo-1485827404703-89b55fcc595e?w=800",
+@@ -261,7 +283,7 @@ async function main() {
+     {
+       name: "Exclusive Chef's Table Dinner",
+       description: "An intimate 5-course dining experience with award-winning Chef Marco Rossi. Limited seating for a truly personal culinary journey.",
+-      date: new Date("2026-06-05"),
++      date: daysFromNow(90),
+       time: "19:30",
+       venue: "Rossi's Private Kitchen, Portland",
+       imageUrl: "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=800",
+@@ -336,7 +358,7 @@ async function main() {
+   const promoConfigs = [
+     {
+       eventIndex: 0, code: "SUMMER20", discountType: "PERCENTAGE", discountValue: 20,
+-      usageLimit: 100, validFrom: new Date("2026-06-01"), validUntil: new Date("2026-07-14"),
++      usageLimit: 100, validFrom: daysFromNow(-30), validUntil: daysFromNow(119),
+       maxDiscountAmount: 50,
+     },
+     {
+@@ -345,11 +367,11 @@ async function main() {
+     },
+     {
+       eventIndex: 1, code: "EARLYBIRD", discountType: "PERCENTAGE", discountValue: 15,
+-      usageLimit: 20, validUntil: new Date("2026-03-15"),
++      usageLimit: 20, validUntil: daysFromNow(24),
+     },
+     {
+       eventIndex: 5, code: "BEACH10", discountType: "PERCENTAGE", discountValue: 10,
+-      usageLimit: 200, validFrom: new Date("2026-06-01"), validUntil: new Date("2026-07-31"),
++      usageLimit: 200, validFrom: daysFromNow(-30), validUntil: daysFromNow(139),
+     },
+     {
+       eventIndex: 5, code: "VIP50OFF", discountType: "FIXED", discountValue: 50,
+@@ -519,7 +541,7 @@ async function main() {
+   await prisma.booking.create({
+     data: {
+       ticketCode: carolWaitlistTicket,
+-      qrCodeData: generateQRData(carolWaitlistTicket),
++      qrCodeData: generateWaitlistMarker(carolWaitlistTicket),
+       status: "WAITLISTED",
+       pricePaid: 0,
+       discountAmount: 0,
+@@ -529,15 +551,18 @@ async function main() {
+   });
+   console.log(`Waitlisted: ${attendee3.name} -> ${chefTableEvent.name}`);
+ 
+-  // Organizer2 is also waitlisted (joined after Carol)
++  // Bob's partner Mike is also waitlisted (joined after Carol).
++  // createdAt is set explicitly: two rows written in the same millisecond give
++  // waitlist position an ambiguous ordering, and position is user-visible.
+   const org2WaitlistTicket = generateTicketCode();
+   await prisma.booking.create({
+     data: {
+       ticketCode: org2WaitlistTicket,
+-      qrCodeData: generateQRData(org2WaitlistTicket),
++      qrCodeData: generateWaitlistMarker(org2WaitlistTicket),
+       status: "WAITLISTED",
+       pricePaid: 0,
+       discountAmount: 0,
++      createdAt: new Date(Date.now() + 1000),
+       userId: organizer2.id,
+       eventId: chefTableEvent.id,
+     },
+diff --git a/backend/src/lib/capacity.ts b/backend/src/lib/capacity.ts
+index 7a1d365..3fc9045 100644
+--- a/backend/src/lib/capacity.ts
++++ b/backend/src/lib/capacity.ts
+@@ -6,13 +6,18 @@
+ /**
+  * Decrement capacity counts when a booking is cancelled or removed.
+  * Handles both event-level and tier-level sold counts.
++ *
++ * The event-level count is ALWAYS decremented — every booking, tiered or not,
++ * incremented it on creation (see incrementCapacity), so cancellation must be
++ * symmetric. The tier count is only touched when the booking had a tier.
+  */
+ export async function decrementCapacity(tx: any, booking: any) {
++  await tx.event.update({
++    where: { id: booking.eventId },
++    data: { soldCount: { decrement: 1 } },
++  });
++
+   if (booking.seatTierId) {
+-    await tx.event.update({
+-      where: { id: booking.eventId },
+-      data: { soldCount: { decrement: 1 } },
+-    });
+     await tx.seatTier.update({
+       where: { id: booking.seatTierId },
+       data: { soldCount: { decrement: 1 } },
+diff --git a/backend/src/lib/transfer.ts b/backend/src/lib/transfer.ts
+index 6401157..8af8272 100644
+--- a/backend/src/lib/transfer.ts
++++ b/backend/src/lib/transfer.ts
+@@ -127,3 +127,80 @@ export async function transferBooking(
+ 
+   return newBooking;
+ }
++
++/**
++ * Hands an existing booking to a new owner WITHOUT cancelling it.
++ *
++ * Use this for attendee-initiated transfers. Unlike transferBooking(), the
++ * booking row keeps its id, ticketCode and qrCodeData, and its status stays
++ * CONFIRMED. That matters for three reasons:
++ *
++ *   1. No CANCELLED row is left behind in the sender's booking list, so the
++ *      ticket genuinely disappears from their account instead of lingering
++ *      as a "Cancelled" card.
++ *   2. Capacity is untouched — the seat never leaves the event, it only
++ *      changes hands. No decrement/increment round trip to get wrong.
++ *   3. Nothing downstream that reacts to a booking becoming CANCELLED (refund
++ *      accounting, dashboard refund counts, waitlist auto-promotion) fires on
++ *      what is really just an ownership change. Reusing the cancel+create path
++ *      here would hand a waitlisted user a seat that was never freed.
++ *
++ * Callers are responsible for authorization (the caller owns the booking) and
++ * for resolving/validating the recipient before calling this.
++ *
++ * @param tx - Prisma transaction client (call within $transaction)
++ * @param bookingId - ID of the booking to hand over
++ * @param recipientId - User ID of the new owner
++ * @returns The same booking record, now owned by the recipient
++ */
++export async function transferOwnership(
++  tx: any,
++  bookingId: string,
++  recipientId: string
++) {
++  const booking = await tx.booking.findUnique({
++    where: { id: bookingId },
++  });
++
++  if (!booking) {
++    throw new Error("NOT_FOUND:Booking not found");
++  }
++
++  if (booking.status !== "CONFIRMED") {
++    throw new Error("INVALID_STATUS:Only confirmed bookings can be transferred");
++  }
++
++  if (booking.userId === recipientId) {
++    throw new Error("VALIDATION:Cannot transfer a ticket to yourself");
++  }
++
++  return tx.booking.update({
++    where: { id: booking.id },
++    data: { userId: recipientId },
++    include: {
++      event: {
++        select: {
++          id: true,
++          name: true,
++          date: true,
++          time: true,
++          venue: true,
++        },
++      },
++      seatTier: {
++        select: {
++          id: true,
++          name: true,
++          price: true,
++        },
++      },
++      user: {
++        select: {
++          id: true,
++          name: true,
++          email: true,
++        },
++      },
++    },
++  });
++}
+diff --git a/backend/src/routes/checkin.ts b/backend/src/routes/checkin.ts
+index 5f4ce34..0432460 100644
+--- a/backend/src/routes/checkin.ts
++++ b/backend/src/routes/checkin.ts
+@@ -89,6 +89,18 @@ router.post("/", authenticateApiKey, async (req, res) => {
+       });
+     }
+ 
++    // Everything that is not a confirmed ticket is rejected here.
++    // WAITLISTED rows are queue placeholders, not tickets — they only carry a
++    // ticketCode/qrCodeData because the Booking model requires those columns.
++    // Without this guard a waitlisted user can scan in and take a seat for free.
++    if (booking.status !== "CONFIRMED") {
++      return res.status(400).json({
++        success: false,
++        error: "INVALID_TICKET",
++        message: "This booking is not a valid ticket for check-in",
++      });
++    }
++
+     // Mark as checked in
+     await prisma.booking.update({
+       where: { id: booking.id },
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 449d3f5..f053ed9 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -150,6 +150,7 @@ export interface DashboardStats {
+   totalRefundCount: number;
+   totalCheckedIn: number;
+   attendanceRate: number;
++  waitlistedCount: number;
+   categoryBreakdown: Record<string, { events: number; tickets: number; revenue: number }>;
+   recentSales: { date: string; count: number; revenue: number }[];
+ }
