@@ -1,0 +1,2181 @@
+diff --git a/backend/package.json b/backend/package.json
+index 78da813..fd56d94 100644
+--- a/backend/package.json
++++ b/backend/package.json
+@@ -10,7 +10,8 @@
+     "db:generate": "prisma generate",
+     "db:seed": "tsx prisma/seed.ts",
+     "db:studio": "prisma studio",
+-    "db:reset": "prisma db push --force-reset && npm run db:seed"
++    "db:reset": "prisma db push --force-reset && npm run db:seed",
++    "test": "tsx tests/acceptance.test.ts"
+   },
+   "dependencies": {
+     "@prisma/client": "^5.22.0",
+diff --git a/backend/prisma/schema.prisma b/backend/prisma/schema.prisma
+index a54b193..0259ac2 100644
+--- a/backend/prisma/schema.prisma
++++ b/backend/prisma/schema.prisma
+@@ -18,8 +18,9 @@ model User {
+   createdAt  DateTime  @default(now())
+   updatedAt  DateTime  @updatedAt
+ 
+-  organizedEvents Event[]   @relation("OrganizerEvents")
++  organizedEvents Event[]         @relation("OrganizerEvents")
+   bookings        Booking[]
++  waitlistEntries WaitlistEntry[]
+ 
+   @@index([email])
+ }
+@@ -44,10 +45,11 @@ model Event {
+   updatedAt         DateTime @updatedAt
+ 
+   organizerId String
+-  organizer   User       @relation("OrganizerEvents", fields: [organizerId], references: [id])
++  organizer   User            @relation("OrganizerEvents", fields: [organizerId], references: [id])
+   bookings    Booking[]
+   seatTiers   SeatTier[]
+   promoCodes  PromoCode[]
++  waitlist    WaitlistEntry[]
+ 
+   @@index([status])
+   @@index([date])
+@@ -120,3 +122,31 @@ model Booking {
+   @@index([userId])
+   @@index([eventId])
+ }
++
++/// A place in the queue for a sold-out event.
++///
++/// Modelled separately from Booking rather than as a Booking status: Booking
++/// requires a unique ticketCode/qrCodeData, so a status-based waitlist forces
++/// every queue member to carry scannable ticket credentials for a ticket they
++/// do not hold. A dedicated table also gives a real uniqueness constraint
++/// against double-joining, which a status value cannot express.
++///
++/// `position` is a monotonic sequence number, not a rank. It is assigned once
++/// on join and never rewritten, so leaving the queue is a plain delete with no
++/// resequencing pass (and therefore no lost-update race between a departure and
++/// a concurrent promotion). The position shown to a user is their *rank* among
++/// remaining entries, derived at read time.
++model WaitlistEntry {
++  id        String   @id @default(cuid())
++  position  Int
++  createdAt DateTime @default(now())
++  updatedAt DateTime @updatedAt
++
++  userId  String
++  user    User   @relation(fields: [userId], references: [id])
++  eventId String
++  event   Event  @relation(fields: [eventId], references: [id])
++
++  @@unique([eventId, userId])
++  @@index([eventId, position])
++}
+diff --git a/backend/prisma/seed.ts b/backend/prisma/seed.ts
+index 73e1fb7..1b0c3d2 100644
+--- a/backend/prisma/seed.ts
++++ b/backend/prisma/seed.ts
+@@ -15,10 +15,24 @@ function generateQRData(ticketCode: string): string {
+   });
+ }
+ 
++/**
++ * Seed dates are relative to the run date, not fixed calendar dates.
++ * Hardcoded dates rot silently: once they slip into the past, refund.ts blocks
++ * cancellation and the event page disables purchase, so the sold-out /
++ * waitlist / cancellation scenarios below become impossible to exercise.
++ */
++function daysFromNow(days: number): Date {
++  const d = new Date();
++  d.setHours(12, 0, 0, 0);
++  d.setDate(d.getDate() + days);
++  return d;
++}
++
+ async function main() {
+   console.log("Seeding database...\n");
+ 
+   // Clear existing data for clean restart
++  await prisma.waitlistEntry.deleteMany({});
+   await prisma.booking.deleteMany({});
+   await prisma.promoCode.deleteMany({});
+   await prisma.seatTier.deleteMany({});
+@@ -101,7 +115,7 @@ async function main() {
+     {
+       name: "Summer Rock Festival 2026",
+       description: "The biggest rock festival of the summer! Join us for three days of amazing music, great food, and unforgettable memories.",
+-      date: new Date("2026-07-15"),
++      date: daysFromNow(120),
+       time: "18:00",
+       venue: "Central Park Amphitheater, New York",
+       imageUrl: "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=800",
+@@ -117,7 +131,7 @@ async function main() {
+     {
+       name: "JavaScript Mastery Workshop",
+       description: "Deep dive into modern JavaScript development. Learn about ES2026 features, async patterns, and performance optimization.",
+-      date: new Date("2026-03-20"),
++      date: daysFromNow(25),
+       time: "09:00",
+       venue: "Tech Hub Conference Center, San Francisco",
+       imageUrl: "https://images.unsplash.com/photo-1517694712202-14dd9538aa97?w=800",
+@@ -133,7 +147,7 @@ async function main() {
+     {
+       name: "Jazz Night Under the Stars",
+       description: "An intimate evening of smooth jazz in a beautiful outdoor setting. Enjoy world-class musicians and fine wine.",
+-      date: new Date("2026-04-10"),
++      date: daysFromNow(45),
+       time: "20:00",
+       venue: "Botanical Gardens, Chicago",
+       imageUrl: "https://images.unsplash.com/photo-1415201364774-f6f0bb35f28f?w=800",
+@@ -149,7 +163,7 @@ async function main() {
+     {
+       name: "Startup Pitch Competition",
+       description: "Watch innovative startups compete for $100,000 in funding. Network with investors and entrepreneurs.",
+-      date: new Date("2026-05-05"),
++      date: daysFromNow(70),
+       time: "14:00",
+       venue: "Innovation Center, Austin",
+       imageUrl: "https://images.unsplash.com/photo-1475721027785-f74eccf877e2?w=800",
+@@ -165,7 +179,7 @@ async function main() {
+     {
+       name: "Photography Workshop for Beginners",
+       description: "Learn the fundamentals of photography in this hands-on workshop. Covers camera basics, composition, and lighting.",
+-      date: new Date("2026-06-12"),
++      date: daysFromNow(95),
+       time: "10:00",
+       venue: "Art Studio Downtown, Seattle",
+       imageUrl: "https://images.unsplash.com/photo-1542038784456-1ea8e935640e?w=800",
+@@ -181,7 +195,7 @@ async function main() {
+     {
+       name: "EDM Beach Party",
+       description: "Dance the night away at the hottest beach party of the year. Top DJs, incredible light shows, and ocean vibes.",
+-      date: new Date("2026-08-01"),
++      date: daysFromNow(140),
+       time: "21:00",
+       venue: "Miami Beach, South Beach Area",
+       imageUrl: "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=800",
+@@ -197,7 +211,7 @@ async function main() {
+     {
+       name: "Wine Tasting Experience",
+       description: "Discover exquisite wines from around the world. Guided tasting with sommelier and cheese pairings included.",
+-      date: new Date("2026-04-25"),
++      date: daysFromNow(60),
+       time: "19:00",
+       venue: "Grand Vineyard Estate, Napa Valley",
+       imageUrl: "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=800",
+@@ -213,7 +227,7 @@ async function main() {
+     {
+       name: "Stand-Up Comedy Night",
+       description: "Laugh out loud with the funniest comedians in the country. Two hours of non-stop entertainment.",
+-      date: new Date("2026-05-18"),
++      date: daysFromNow(80),
+       time: "20:30",
+       venue: "The Laugh Factory, Los Angeles",
+       imageUrl: "https://images.unsplash.com/photo-1527224538127-2104bb71c51b?w=800",
+@@ -229,7 +243,7 @@ async function main() {
+     {
+       name: "Marathon Training Bootcamp",
+       description: "Intensive 1-day training session for aspiring marathon runners. Learn proper technique and nutrition strategies.",
+-      date: new Date("2026-03-08"),
++      date: daysFromNow(14),
+       time: "06:00",
+       venue: "Olympic Training Center, Denver",
+       imageUrl: "https://images.unsplash.com/photo-1552674605-db6ffd4facb5?w=800",
+@@ -245,7 +259,7 @@ async function main() {
+     {
+       name: "AI & Machine Learning Conference",
+       description: "Explore the latest breakthroughs in AI. Keynotes from industry leaders, hands-on workshops, and networking.",
+-      date: new Date("2026-09-22"),
++      date: daysFromNow(180),
+       time: "08:30",
+       venue: "Boston Convention Center, Boston",
+       imageUrl: "https://images.unsplash.com/photo-1485827404703-89b55fcc595e?w=800",
+@@ -261,7 +275,7 @@ async function main() {
+     {
+       name: "Exclusive Chef's Table Dinner",
+       description: "An intimate 5-course dining experience with award-winning Chef Marco Rossi. Limited seating for a truly personal culinary journey.",
+-      date: new Date("2026-06-05"),
++      date: daysFromNow(90),
+       time: "19:30",
+       venue: "Rossi's Private Kitchen, Portland",
+       imageUrl: "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=800",
+@@ -336,7 +350,7 @@ async function main() {
+   const promoConfigs = [
+     {
+       eventIndex: 0, code: "SUMMER20", discountType: "PERCENTAGE", discountValue: 20,
+-      usageLimit: 100, validFrom: new Date("2026-06-01"), validUntil: new Date("2026-07-14"),
++      usageLimit: 100, validFrom: daysFromNow(-30), validUntil: daysFromNow(119),
+       maxDiscountAmount: 50,
+     },
+     {
+@@ -345,11 +359,11 @@ async function main() {
+     },
+     {
+       eventIndex: 1, code: "EARLYBIRD", discountType: "PERCENTAGE", discountValue: 15,
+-      usageLimit: 20, validUntil: new Date("2026-03-15"),
++      usageLimit: 20, validUntil: daysFromNow(24),
+     },
+     {
+       eventIndex: 5, code: "BEACH10", discountType: "PERCENTAGE", discountValue: 10,
+-      usageLimit: 200, validFrom: new Date("2026-06-01"), validUntil: new Date("2026-07-31"),
++      usageLimit: 200, validFrom: daysFromNow(-30), validUntil: daysFromNow(139),
+     },
+     {
+       eventIndex: 5, code: "VIP50OFF", discountType: "FIXED", discountValue: 50,
+@@ -507,42 +521,25 @@ async function main() {
+     console.log(`Cancelled: ${cancelled.user.name} -> ${event.name} (refund: $${cancelled.refundAmount})`);
+   }
+ 
+-  // Create waitlisted bookings for the sold-out Chef's Table Dinner (event 10)
+-  // These represent users who tried to book after it sold out.
+-  // A previous developer started implementing waitlist using the booking status pattern.
+-  console.log("\nCreating waitlisted bookings...\n");
++  // Queue two people for the sold-out Chef's Table Dinner (event 10).
++  //
++  // These are WaitlistEntry rows, not bookings with a WAITLISTED status. A
++  // queue member holds no ticket, and Booking requires a unique
++  // ticketCode/qrCodeData — so the status approach would mint scannable ticket
++  // credentials for people who have not bought anything.
++  console.log("\nCreating waitlist entries...\n");
+ 
+   const chefTableEvent = createdEvents[10];
+ 
+-  // Carol is waitlisted for Chef's Table Dinner
+-  const carolWaitlistTicket = generateTicketCode();
+-  await prisma.booking.create({
+-    data: {
+-      ticketCode: carolWaitlistTicket,
+-      qrCodeData: generateQRData(carolWaitlistTicket),
+-      status: "WAITLISTED",
+-      pricePaid: 0,
+-      discountAmount: 0,
+-      userId: attendee3.id,
+-      eventId: chefTableEvent.id,
+-    },
++  await prisma.waitlistEntry.create({
++    data: { eventId: chefTableEvent.id, userId: attendee3.id, position: 1 },
+   });
+-  console.log(`Waitlisted: ${attendee3.name} -> ${chefTableEvent.name}`);
+-
+-  // Organizer2 is also waitlisted (joined after Carol)
+-  const org2WaitlistTicket = generateTicketCode();
+-  await prisma.booking.create({
+-    data: {
+-      ticketCode: org2WaitlistTicket,
+-      qrCodeData: generateQRData(org2WaitlistTicket),
+-      status: "WAITLISTED",
+-      pricePaid: 0,
+-      discountAmount: 0,
+-      userId: organizer2.id,
+-      eventId: chefTableEvent.id,
+-    },
++  console.log(`Waitlisted #1: ${attendee3.name} -> ${chefTableEvent.name}`);
++
++  await prisma.waitlistEntry.create({
++    data: { eventId: chefTableEvent.id, userId: organizer2.id, position: 2 },
+   });
+-  console.log(`Waitlisted: ${organizer2.name} -> ${chefTableEvent.name}`);
++  console.log(`Waitlisted #2: ${organizer2.name} -> ${chefTableEvent.name}`);
+ 
+   console.log("\n--- Seeding complete! ---");
+   console.log("\n--- Test Credentials ---");
+@@ -558,7 +555,7 @@ async function main() {
+   console.log("Refund Policies: JS Workshop/Chef's Table (FULL_REFUND), Photography/Marathon (NO_REFUND), Others (TIERED)");
+   console.log("Categories: MUSIC(3), WORKSHOP(2), CONFERENCE(2), COMEDY(1), SPORTS(1), OTHER(2)");
+   console.log("Sold Out: Chef's Table Dinner (capacity 2, Alice + Bob)");
+-  console.log("Waitlisted: Carol + Mike Johnson on Chef's Table Dinner");
++  console.log("Waitlist: Carol (#1) + Mike Johnson (#2) on Chef's Table Dinner");
+ }
+ 
+ main()
+diff --git a/backend/src/lib/capacity.ts b/backend/src/lib/capacity.ts
+index 7a1d365..60ee186 100644
+--- a/backend/src/lib/capacity.ts
++++ b/backend/src/lib/capacity.ts
+@@ -6,13 +6,18 @@
+ /**
+  * Decrement capacity counts when a booking is cancelled or removed.
+  * Handles both event-level and tier-level sold counts.
++ *
++ * The event-level count is ALWAYS decremented — every booking, tiered or not,
++ * incremented it on creation (see incrementCapacity), so cancellation must be
++ * symmetric. The tier count is only touched when the booking had a tier.
+  */
+ export async function decrementCapacity(tx: any, booking: any) {
++  await tx.event.update({
++    where: { id: booking.eventId },
++    data: { soldCount: { decrement: 1 } },
++  });
++
+   if (booking.seatTierId) {
+-    await tx.event.update({
+-      where: { id: booking.eventId },
+-      data: { soldCount: { decrement: 1 } },
+-    });
+     await tx.seatTier.update({
+       where: { id: booking.seatTierId },
+       data: { soldCount: { decrement: 1 } },
+@@ -40,3 +45,50 @@ export async function incrementCapacity(
+     });
+   }
+ }
++
++/**
++ * Is this event sold out?
++ *
++ * An event with tiers is sold out only when EVERY tier is full — the
++ * event-level counter is not authoritative there, because tier capacities are
++ * what the purchase path actually checks (see routes/bookings.ts). An event
++ * without tiers is sold out when its own counter reaches capacity.
++ *
++ * This mirrors the rule the frontend applies in events/[id]/page.tsx so the
++ * "Join Waitlist" button and the API agree on what "sold out" means.
++ */
++export async function isEventSoldOut(tx: any, eventId: string): Promise<boolean> {
++  const event = await tx.event.findUnique({
++    where: { id: eventId },
++    include: { seatTiers: true },
++  });
++
++  if (!event) return false;
++
++  if (event.seatTiers.length > 0) {
++    return event.seatTiers.every((t: any) => t.soldCount >= t.capacity);
++  }
++
++  return event.soldCount >= event.capacity;
++}
++
++/**
++ * Does this event have room for one more booking in the given tier?
++ *
++ * Used by waitlist promotion, which claims a specific seat that was just freed
++ * rather than "any" seat: when a tiered booking is cancelled it is that tier
++ * that has room, and promoting into a different, still-full tier would oversell.
++ */
++export async function hasRoomFor(
++  tx: any,
++  eventId: string,
++  seatTierId?: string | null
++): Promise<boolean> {
++  if (seatTierId) {
++    const tier = await tx.seatTier.findUnique({ where: { id: seatTierId } });
++    return !!tier && tier.soldCount < tier.capacity;
++  }
++
++  const event = await tx.event.findUnique({ where: { id: eventId } });
++  return !!event && event.soldCount < event.capacity;
++}
+diff --git a/backend/src/lib/transfer.ts b/backend/src/lib/transfer.ts
+index 6401157..69cdefb 100644
+--- a/backend/src/lib/transfer.ts
++++ b/backend/src/lib/transfer.ts
+@@ -127,3 +127,70 @@ export async function transferBooking(
+ 
+   return newBooking;
+ }
++
++/**
++ * Hands an existing booking to a new owner WITHOUT cancelling it.
++ *
++ * This is the path attendee-initiated transfers use. Unlike transferBooking(),
++ * the booking row keeps its id, ticketCode and qrCodeData, and its status stays
++ * CONFIRMED. That matters for three reasons:
++ *
++ *   1. No CANCELLED row is left behind in the sender's booking list, so the
++ *      ticket genuinely disappears from their account instead of lingering as
++ *      a "Cancelled" card.
++ *   2. Capacity is untouched — the seat never leaves the event, it only changes
++ *      hands. No decrement/increment round trip to get wrong.
++ *   3. Nothing downstream that reacts to a booking becoming CANCELLED (refund
++ *      accounting, dashboard refund counts, waitlist auto-promotion) fires on
++ *      what is really just an ownership change. Reusing the cancel+create path
++ *      here would hand a waitlisted user a seat that was never freed.
++ *
++ * Callers are responsible for authorization (the caller owns the booking) and
++ * for resolving/validating the recipient before calling this.
++ *
++ * @param tx - Prisma transaction client (call within $transaction)
++ * @param bookingId - ID of the booking to hand over
++ * @param recipientId - User ID of the new owner
++ * @returns The same booking record, now owned by the recipient
++ */
++export async function transferOwnership(
++  tx: any,
++  bookingId: string,
++  recipientId: string
++) {
++  const booking = await tx.booking.findUnique({
++    where: { id: bookingId },
++  });
++
++  if (!booking) {
++    throw new Error("NOT_FOUND:Booking not found");
++  }
++
++  if (booking.status !== "CONFIRMED") {
++    throw new Error(
++      booking.status === "CANCELLED"
++        ? "INVALID_STATUS:This booking has been cancelled and can no longer be transferred"
++        : "INVALID_STATUS:Only confirmed bookings can be transferred"
++    );
++  }
++
++  if (booking.userId === recipientId) {
++    throw new Error("VALIDATION:You cannot transfer a ticket to yourself");
++  }
++
++  return tx.booking.update({
++    where: { id: booking.id },
++    data: { userId: recipientId },
++    include: {
++      event: {
++        select: { id: true, name: true, date: true, time: true, venue: true },
++      },
++      seatTier: {
++        select: { id: true, name: true, price: true },
++      },
++      user: {
++        select: { id: true, name: true, email: true },
++      },
++    },
++  });
++}
+diff --git a/backend/src/lib/validations.ts b/backend/src/lib/validations.ts
+index 4629d28..66d7390 100644
+--- a/backend/src/lib/validations.ts
++++ b/backend/src/lib/validations.ts
+@@ -66,6 +66,16 @@ export const createBookingSchema = z.object({
+   promoCode: z.string().optional(),
+ });
+ 
++// Transfer schema (attendee-initiated)
++export const transferBookingSchema = z.object({
++  recipientEmail: z.string().email("Invalid email address"),
++});
++
++// Waitlist schemas
++export const joinWaitlistSchema = z.object({
++  eventId: z.string().min(1, "Event ID is required"),
++});
++
+ // Reassignment schema (organizer)
+ export const reassignBookingSchema = z.object({
+   recipientEmail: z.string().email("Invalid email address"),
+@@ -87,4 +97,6 @@ export type UpdateTierInput = z.infer<typeof updateTierSchema>;
+ export type CreatePromoCodeInput = z.infer<typeof createPromoCodeSchema>;
+ export type CreateBookingInput = z.infer<typeof createBookingSchema>;
+ export type ReassignBookingInput = z.infer<typeof reassignBookingSchema>;
++export type TransferBookingInput = z.infer<typeof transferBookingSchema>;
++export type JoinWaitlistInput = z.infer<typeof joinWaitlistSchema>;
+ export type CheckinInput = z.infer<typeof checkinSchema>;
+diff --git a/backend/src/lib/waitlist.ts b/backend/src/lib/waitlist.ts
+new file mode 100644
+index 0000000..bf7be9e
+--- /dev/null
++++ b/backend/src/lib/waitlist.ts
+@@ -0,0 +1,132 @@
++import { generateTicketCode, generateQRData } from "./qr.js";
++import { incrementCapacity, hasRoomFor } from "./capacity.js";
++
++/**
++ * Waitlist queue mechanics.
++ *
++ * `WaitlistEntry.position` is a monotonic sequence number assigned once on join
++ * and never rewritten. The position a user SEES is their rank among the entries
++ * that are still queued, computed at read time. Keeping the stored value
++ * immutable means leaving the queue is a plain delete — no resequencing pass
++ * that could race with a concurrent promotion and hand two people the same seat.
++ */
++
++/** Next sequence number for an event's queue. */
++export async function nextPosition(tx: any, eventId: string): Promise<number> {
++  const last = await tx.waitlistEntry.findFirst({
++    where: { eventId },
++    orderBy: { position: "desc" },
++    select: { position: true },
++  });
++  return (last?.position ?? 0) + 1;
++}
++
++/**
++ * A user's 1-based rank in an event's queue, or null if they are not on it.
++ * Derived from how many still-queued entries sit ahead of them.
++ */
++export async function getPosition(
++  tx: any,
++  eventId: string,
++  userId: string
++): Promise<number | null> {
++  const entry = await tx.waitlistEntry.findUnique({
++    where: { eventId_userId: { eventId, userId } },
++    select: { position: true },
++  });
++
++  if (!entry) return null;
++
++  const ahead = await tx.waitlistEntry.count({
++    where: { eventId, position: { lt: entry.position } },
++  });
++
++  return ahead + 1;
++}
++
++/** Total number of people queued for an event. */
++export function waitlistSize(tx: any, eventId: string): Promise<number> {
++  return tx.waitlistEntry.count({ where: { eventId } });
++}
++
++/**
++ * Give the freed seat to the person at the front of the queue.
++ *
++ * Call this INSIDE the same transaction as the cancellation that freed the
++ * seat, so the seat and the new ticket commit together or not at all.
++ *
++ * Call it ONLY when a seat genuinely became available. A ticket transfer also
++ * ends one person's claim on a booking, but the seat never leaves the event —
++ * promoting there would oversell. That is why transferOwnership() in
++ * lib/transfer.ts does not touch this function, and why it does not set a
++ * booking to CANCELLED.
++ *
++ * @param seatTierId - the tier of the seat that was freed (null for general
++ *   admission). The promoted attendee takes that same seat.
++ * @returns the booking created for the promoted user, or null if the queue was
++ *   empty, the seat was already claimed, or the front-of-queue user cannot be
++ *   given a ticket (they already hold one).
++ */
++export async function promoteFromWaitlist(
++  tx: any,
++  eventId: string,
++  seatTierId?: string | null
++) {
++  if (!(await hasRoomFor(tx, eventId, seatTierId))) {
++    return null;
++  }
++
++  // Walk the queue front-to-back; skip anyone who already holds a ticket for
++  // this event rather than failing the whole cancellation on their account.
++  const queue = await tx.waitlistEntry.findMany({
++    where: { eventId },
++    orderBy: { position: "asc" },
++  });
++
++  for (const entry of queue) {
++    const existing = await tx.booking.findFirst({
++      where: { userId: entry.userId, eventId, status: "CONFIRMED" },
++      select: { id: true },
++    });
++
++    // Stale entry: they bought a ticket after joining the queue. Drop it and
++    // move on so the seat still reaches somebody.
++    if (existing) {
++      await tx.waitlistEntry.delete({ where: { id: entry.id } });
++      continue;
++    }
++
++    const tier = seatTierId
++      ? await tx.seatTier.findUnique({ where: { id: seatTierId } })
++      : null;
++    const event = await tx.event.findUnique({ where: { id: eventId } });
++    const price = tier ? tier.price : event.price;
++
++    await incrementCapacity(tx, eventId, seatTierId ?? null);
++
++    const ticketCode = generateTicketCode();
++    const booking = await tx.booking.create({
++      data: {
++        ticketCode,
++        qrCodeData: generateQRData(ticketCode),
++        userId: entry.userId,
++        eventId,
++        seatTierId: seatTierId ?? null,
++        pricePaid: price,
++        discountAmount: 0,
++        status: "CONFIRMED",
++      },
++      include: {
++        event: { select: { id: true, name: true, date: true, time: true, venue: true } },
++        seatTier: { select: { id: true, name: true, price: true } },
++        user: { select: { id: true, name: true, email: true } },
++      },
++    });
++
++    await tx.waitlistEntry.delete({ where: { id: entry.id } });
++
++    return booking;
++  }
++
++  return null;
++}
+diff --git a/backend/src/routes/bookings.ts b/backend/src/routes/bookings.ts
+index 210c536..b3ff03f 100644
+--- a/backend/src/routes/bookings.ts
++++ b/backend/src/routes/bookings.ts
+@@ -5,11 +5,18 @@ import { authenticate } from "../middleware/auth.js";
+ import { generateTicketCode, generateQRData, generateQRCodeDataURL } from "../lib/qr.js";
+ import { calculateRefund } from "../lib/refund.js";
+ import { incrementCapacity, decrementCapacity } from "../lib/capacity.js";
+-
+-// Booking ownership changes: see lib/transfer.ts for the cancel+create utility
+-// used by organizer reassignment. For attendee-initiated transfers, consider
+-// whether the full cancel+create cycle is needed or if a simpler ownership
+-// update would suffice — see the NOTE in transfer.ts for trade-offs.
++import { transferOwnership } from "../lib/transfer.js";
++import { transferBookingSchema } from "../lib/validations.js";
++import { promoteFromWaitlist } from "../lib/waitlist.js";
++
++// Booking ownership changes go through lib/transfer.ts. Two distinct paths:
++//   transferBooking()   — organizer reassignment. Cancel + recreate, fresh
++//                         credentials, audit trail preserved.
++//   transferOwnership() — attendee transfer (below). Same row, same ticket,
++//                         status stays CONFIRMED.
++// The distinction is not cosmetic: transferBooking() sets a booking to
++// CANCELLED, and cancellation is what triggers waitlist promotion. Using it for
++// an attendee transfer would promote someone into a seat that never came free.
+ 
+ const router = Router();
+ 
+@@ -503,16 +510,25 @@ router.delete("/:id", authenticate, async (req, res) => {
+         });
+       }
+ 
+-      return refund;
++      // A seat genuinely came free — offer it to the front of the queue.
++      // Inside the same transaction so the freed seat and the promoted ticket
++      // commit together; a crash between the two would otherwise leave a seat
++      // that is neither held nor available.
++      const promoted = await promoteFromWaitlist(tx, booking.eventId, booking.seatTierId);
++
++      return { refund, promoted };
+     });
+ 
+     res.json({
+       success: true,
+       message: "Booking cancelled successfully",
+       data: {
+-        refundAmount: result.finalRefund,
+-        refundPercentage: result.refundPercentage,
+-        serviceFee: result.serviceFee,
++        refundAmount: result.refund.finalRefund,
++        refundPercentage: result.refund.refundPercentage,
++        serviceFee: result.refund.serviceFee,
++        promotedFromWaitlist: result.promoted
++          ? { bookingId: result.promoted.id, attendee: result.promoted.user.name }
++          : null,
+       },
+     });
+   } catch (error: unknown) {
+@@ -567,6 +583,114 @@ router.delete("/:id", authenticate, async (req, res) => {
+   }
+ });
+ 
++// POST /api/bookings/:id/transfer - Transfer a ticket to another registered user
++//
++// Ownership change only: the booking keeps its id, ticket code and QR, so the
++// recipient's ticket is immediately valid for check-in and the sender's copy
++// disappears from their list rather than lingering as a cancelled row.
++router.post("/:id/transfer", authenticate, async (req, res) => {
++  try {
++    const result = transferBookingSchema.safeParse(req.body);
++    if (!result.success) {
++      return res.status(400).json({
++        success: false,
++        error: "VALIDATION_ERROR",
++        message: result.error.errors[0].message,
++      });
++    }
++
++    const { recipientEmail } = result.data;
++
++    const transferred = await prisma.$transaction(async (tx) => {
++      const booking = await tx.booking.findUnique({
++        where: { id: req.params.id as string },
++      });
++
++      if (!booking) {
++        throw new Error("NOT_FOUND:Booking not found");
++      }
++
++      // Authorization first: never leak whether a recipient exists to someone
++      // who does not own the booking.
++      if (booking.userId !== req.user!.userId) {
++        throw new Error("FORBIDDEN:You can only transfer your own bookings");
++      }
++
++      const recipient = await tx.user.findUnique({
++        where: { email: recipientEmail.toLowerCase().trim() },
++      });
++
++      if (!recipient) {
++        throw new Error("NOT_FOUND:No registered user found with that email address");
++      }
++
++      // Check this before the duplicate-ticket rule below: transferring to
++      // yourself trivially collides with your own ticket, and reporting that as
++      // "they already have a ticket" is misleading.
++      if (recipient.id === booking.userId) {
++        throw new Error("VALIDATION:You cannot transfer a ticket to yourself");
++      }
++
++      // One ticket per user per event, matching the purchase rule.
++      const existing = await tx.booking.findFirst({
++        where: {
++          userId: recipient.id,
++          eventId: booking.eventId,
++          status: "CONFIRMED",
++        },
++      });
++
++      if (existing) {
++        throw new Error("DUPLICATE:That user already has a ticket for this event");
++      }
++
++      const updated = await transferOwnership(tx, booking.id, recipient.id);
++
++      // The recipient may have been queued for this event — they hold a ticket
++      // now, so their place in the queue should not also be honoured.
++      await tx.waitlistEntry.deleteMany({
++        where: { eventId: booking.eventId, userId: recipient.id },
++      });
++
++      return updated;
++    });
++
++    res.json({
++      success: true,
++      data: transferred,
++      message: `Ticket transferred to ${transferred.user.email}`,
++    });
++  } catch (error: unknown) {
++    const err = error as Error;
++    console.error("Error transferring booking:", err);
++
++    const [code, ...rest] = err.message?.split(":") ?? [];
++    const message = rest.join(":");
++
++    const statusByCode: Record<string, number> = {
++      NOT_FOUND: 404,
++      FORBIDDEN: 403,
++      INVALID_STATUS: 400,
++      VALIDATION: 400,
++      DUPLICATE: 409,
++    };
++
++    if (statusByCode[code]) {
++      return res.status(statusByCode[code]).json({
++        success: false,
++        error: code === "VALIDATION" ? "VALIDATION_ERROR" : code,
++        message,
++      });
++    }
++
++    res.status(500).json({
++      success: false,
++      error: "INTERNAL_ERROR",
++      message: "Failed to transfer ticket",
++    });
++  }
++});
++
+ // GET /api/bookings/:id/qr - Get QR code image
+ router.get("/:id/qr", authenticate, async (req, res) => {
+   try {
+diff --git a/backend/src/routes/checkin.ts b/backend/src/routes/checkin.ts
+index 5f4ce34..3cbbc61 100644
+--- a/backend/src/routes/checkin.ts
++++ b/backend/src/routes/checkin.ts
+@@ -89,6 +89,18 @@ router.post("/", authenticateApiKey, async (req, res) => {
+       });
+     }
+ 
++    // Everything that is not a confirmed ticket is rejected here.
++    // Validating by allowlist rather than denylist: Booking.status can hold
++    // values that are not tickets, and a denylist silently admits any status
++    // added later.
++    if (booking.status !== "CONFIRMED") {
++      return res.status(400).json({
++        success: false,
++        error: "INVALID_TICKET",
++        message: "This booking is not a valid ticket for check-in",
++      });
++    }
++
+     // Mark as checked in
+     await prisma.booking.update({
+       where: { id: booking.id },
+diff --git a/backend/src/routes/waitlist.ts b/backend/src/routes/waitlist.ts
+index 324b1e6..63915d1 100644
+--- a/backend/src/routes/waitlist.ts
++++ b/backend/src/routes/waitlist.ts
+@@ -1,8 +1,217 @@
+ import { Router } from "express";
++import { prisma } from "../lib/prisma.js";
+ import { authenticate } from "../middleware/auth.js";
++import { joinWaitlistSchema } from "../lib/validations.js";
++import { isEventSoldOut } from "../lib/capacity.js";
++import { getPosition, nextPosition, waitlistSize } from "../lib/waitlist.js";
+ 
+ const router = Router();
+ 
+-// TODO: Implement waitlist endpoints (join, leave, view position)
++// POST /api/waitlist - Join the waitlist for a sold-out event
++router.post("/", authenticate, async (req, res) => {
++  try {
++    const result = joinWaitlistSchema.safeParse(req.body);
++    if (!result.success) {
++      return res.status(400).json({
++        success: false,
++        error: "VALIDATION_ERROR",
++        message: result.error.errors[0].message,
++      });
++    }
++
++    const { eventId } = result.data;
++    const userId = req.user!.userId;
++
++    const entry = await prisma.$transaction(async (tx) => {
++      const event = await tx.event.findUnique({ where: { id: eventId } });
++
++      if (!event) {
++        throw new Error("NOT_FOUND:Event not found");
++      }
++
++      if (event.status !== "PUBLISHED") {
++        throw new Error("INVALID_EVENT:This event is not open for waitlisting");
++      }
++
++      if (new Date(event.date) <= new Date()) {
++        throw new Error("PAST_EVENT:This event has already passed");
++      }
++
++      // A waitlist only makes sense for an event with nothing left to sell.
++      if (!(await isEventSoldOut(tx, eventId))) {
++        throw new Error("NOT_SOLD_OUT:Tickets are still available — you can buy one directly");
++      }
++
++      const existingBooking = await tx.booking.findFirst({
++        where: { userId, eventId, status: "CONFIRMED" },
++      });
++
++      if (existingBooking) {
++        throw new Error("DUPLICATE:You already have a ticket for this event");
++      }
++
++      const alreadyQueued = await tx.waitlistEntry.findUnique({
++        where: { eventId_userId: { eventId, userId } },
++      });
++
++      if (alreadyQueued) {
++        throw new Error("DUPLICATE:You are already on the waitlist for this event");
++      }
++
++      return tx.waitlistEntry.create({
++        data: {
++          eventId,
++          userId,
++          position: await nextPosition(tx, eventId),
++        },
++      });
++    });
++
++    const [position, total] = await Promise.all([
++      getPosition(prisma, eventId, userId),
++      waitlistSize(prisma, eventId),
++    ]);
++
++    res.status(201).json({
++      success: true,
++      data: { id: entry.id, eventId, position, total },
++      message: `You're #${position} on the waitlist`,
++    });
++  } catch (error: unknown) {
++    handleWaitlistError(error, res, "Failed to join the waitlist");
++  }
++});
++
++// GET /api/waitlist - List the current user's waitlist entries with live positions
++router.get("/", authenticate, async (req, res) => {
++  try {
++    const userId = req.user!.userId;
++
++    const entries = await prisma.waitlistEntry.findMany({
++      where: { userId },
++      include: {
++        event: {
++          select: {
++            id: true,
++            name: true,
++            date: true,
++            time: true,
++            venue: true,
++            imageUrl: true,
++            status: true,
++            category: true,
++          },
++        },
++      },
++      orderBy: { createdAt: "desc" },
++    });
++
++    const withPositions = await Promise.all(
++      entries.map(async (entry) => ({
++        id: entry.id,
++        eventId: entry.eventId,
++        event: entry.event,
++        joinedAt: entry.createdAt,
++        position: await getPosition(prisma, entry.eventId, userId),
++        total: await waitlistSize(prisma, entry.eventId),
++      }))
++    );
++
++    res.json({ success: true, data: withPositions });
++  } catch (error) {
++    console.error("Error fetching waitlist entries:", error);
++    res.status(500).json({
++      success: false,
++      error: "INTERNAL_ERROR",
++      message: "Failed to fetch waitlist entries",
++    });
++  }
++});
++
++// GET /api/waitlist/:eventId - The current user's position for one event
++router.get("/:eventId", authenticate, async (req, res) => {
++  try {
++    const eventId = req.params.eventId as string;
++    const userId = req.user!.userId;
++
++    const position = await getPosition(prisma, eventId, userId);
++
++    res.json({
++      success: true,
++      data: {
++        eventId,
++        onWaitlist: position !== null,
++        position,
++        total: await waitlistSize(prisma, eventId),
++      },
++    });
++  } catch (error) {
++    console.error("Error fetching waitlist position:", error);
++    res.status(500).json({
++      success: false,
++      error: "INTERNAL_ERROR",
++      message: "Failed to fetch waitlist position",
++    });
++  }
++});
++
++// DELETE /api/waitlist/:eventId - Leave the waitlist
++//
++// A plain delete. Positions of the people behind are never rewritten — their
++// stored sequence numbers keep their relative order, and the rank each of them
++// sees is derived at read time, so it simply shifts up by one.
++router.delete("/:eventId", authenticate, async (req, res) => {
++  try {
++    const eventId = req.params.eventId as string;
++    const userId = req.user!.userId;
++
++    const removed = await prisma.waitlistEntry.deleteMany({
++      where: { eventId, userId },
++    });
++
++    if (removed.count === 0) {
++      return res.status(404).json({
++        success: false,
++        error: "NOT_FOUND",
++        message: "You are not on the waitlist for this event",
++      });
++    }
++
++    res.json({
++      success: true,
++      message: "You have left the waitlist",
++      data: { eventId, onWaitlist: false, position: null },
++    });
++  } catch (error) {
++    console.error("Error leaving waitlist:", error);
++    res.status(500).json({
++      success: false,
++      error: "INTERNAL_ERROR",
++      message: "Failed to leave the waitlist",
++    });
++  }
++});
++
++function handleWaitlistError(error: unknown, res: any, fallback: string) {
++  const err = error as Error;
++  console.error(fallback, err);
++
++  const [code, ...rest] = err.message?.split(":") ?? [];
++  const message = rest.join(":");
++
++  const statusByCode: Record<string, number> = {
++    NOT_FOUND: 404,
++    INVALID_EVENT: 400,
++    PAST_EVENT: 400,
++    NOT_SOLD_OUT: 400,
++    DUPLICATE: 409,
++  };
++
++  if (statusByCode[code]) {
++    return res.status(statusByCode[code]).json({ success: false, error: code, message });
++  }
++
++  res.status(500).json({ success: false, error: "INTERNAL_ERROR", message: fallback });
++}
+ 
+ export default router;
+diff --git a/backend/tests/acceptance.test.ts b/backend/tests/acceptance.test.ts
+new file mode 100644
+index 0000000..80bef3a
+--- /dev/null
++++ b/backend/tests/acceptance.test.ts
+@@ -0,0 +1,540 @@
++/**
++ * Integration suite for Story 1 (ticket transfer) and Story 2 (event waitlist),
++ * plus regression tests for the defects found auditing the existing code.
++ *
++ * Run with the API server up:
++ *   Terminal 1: npm run dev
++ *   Terminal 2: npm test
++ *
++ * Deliberately dependency-free. The project ships no test runner, and adding
++ * one (vitest/jest + a transform config) is a bigger change to the repo than
++ * the features themselves. Node's assert plus fetch against the real HTTP API
++ * exercises the routes, the transaction boundaries and the DB together, which
++ * is where every bug in this codebase actually lives.
++ *
++ * Fixtures are created per-run with unique emails and torn down at the end, so
++ * the suite is re-runnable and leaves seed data untouched.
++ */
++import { PrismaClient } from "@prisma/client";
++import assert from "node:assert/strict";
++import { randomBytes } from "crypto";
++
++const API = process.env.API_URL ?? "http://localhost:4000";
++const CHECKIN_KEY = process.env.CHECKIN_API_KEY ?? "your-api-key-for-scanner-apps";
++const prisma = new PrismaClient();
++
++const RUN = randomBytes(4).toString("hex");
++const PASSWORD = "testpass123";
++
++let passed = 0;
++let failed = 0;
++const failures: string[] = [];
++
++async function test(name: string, fn: () => Promise<void>) {
++  try {
++    await fn();
++    passed++;
++    console.log(`  PASS  ${name}`);
++  } catch (err) {
++    failed++;
++    const msg = err instanceof Error ? err.message : String(err);
++    failures.push(`${name}\n        ${msg.split("\n").join("\n        ")}`);
++    console.log(`  FAIL  ${name}`);
++    console.log(`        ${msg.split("\n")[0]}`);
++  }
++}
++
++// --- helpers ---------------------------------------------------------------
++
++type Res = { status: number; body: any };
++
++async function api(
++  method: string,
++  path: string,
++  opts: { token?: string; body?: unknown; apiKey?: string } = {}
++): Promise<Res> {
++  const headers: Record<string, string> = { "Content-Type": "application/json" };
++  if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
++  if (opts.apiKey) headers["x-api-key"] = opts.apiKey;
++
++  const res = await fetch(`${API}${path}`, {
++    method,
++    headers,
++    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
++  });
++  return { status: res.status, body: await res.json().catch(() => null) };
++}
++
++async function makeUser(label: string, role: "ATTENDEE" | "ORGANIZER" = "ATTENDEE") {
++  const email = `t-${RUN}-${label}@example.test`;
++  const res = await api("POST", "/api/auth/register", {
++    body: { email, password: PASSWORD, name: `Test ${label}` },
++  });
++  assert.equal(res.status, 201, `register ${label}: ${JSON.stringify(res.body)}`);
++
++  if (role === "ORGANIZER") {
++    await prisma.user.update({ where: { email }, data: { role: "ORGANIZER" } });
++    const login = await api("POST", "/api/auth/login", { body: { email, password: PASSWORD } });
++    return { id: res.body.data.user.id, email, token: login.body.data.token };
++  }
++  return { id: res.body.data.user.id, email, token: res.body.data.token };
++}
++
++/** A published future event owned by a throwaway organizer. */
++async function makeEvent(opts: { capacity: number; price?: number; tiers?: { name: string; price: number; capacity: number }[] }) {
++  const organizerId = (await prisma.user.findFirst({ where: { role: "ORGANIZER" } }))!.id;
++  const event = await prisma.event.create({
++    data: {
++      name: `Test Event ${RUN}-${randomBytes(2).toString("hex")}`,
++      description: "Fixture event for the integration suite.",
++      date: new Date(Date.now() + 60 * 24 * 3600 * 1000),
++      time: "19:00",
++      venue: "Test Venue",
++      category: "OTHER",
++      price: opts.price ?? 100,
++      capacity: opts.capacity,
++      status: "PUBLISHED",
++      refundPolicy: "FULL_REFUND",
++      serviceFeePercent: 0,
++      organizerId,
++    },
++  });
++
++  const tiers = [];
++  for (const t of opts.tiers ?? []) {
++    tiers.push(await prisma.seatTier.create({ data: { ...t, eventId: event.id } }));
++  }
++  return { event, tiers };
++}
++
++/** Purchase a ticket as the given user. */
++function buy(token: string, eventId: string, seatTierId?: string) {
++  return api("POST", "/api/bookings", { token, body: { eventId, seatTierId } });
++}
++
++const soldCount = async (eventId: string) =>
++  (await prisma.event.findUnique({ where: { id: eventId } }))!.soldCount;
++
++const tierSold = async (tierId: string) =>
++  (await prisma.seatTier.findUnique({ where: { id: tierId } }))!.soldCount;
++
++// --- suite -----------------------------------------------------------------
++
++async function main() {
++  const health = await fetch(`${API}/health`).catch(() => null);
++  if (!health?.ok) {
++    console.error(`\nCannot reach the API at ${API}. Start it with "npm run dev" first.\n`);
++    process.exit(1);
++  }
++
++  const alice = await makeUser("alice");
++  const bob = await makeUser("bob");
++  const carol = await makeUser("carol");
++  const dave = await makeUser("dave");
++
++  console.log("\nSTORY 1 — Ticket transfer\n");
++
++  await test("AT1/AT2: transfer hands the ticket over and preserves the booking identity", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const created = await buy(alice.token, event.id);
++    const booking = created.body.data;
++    assert.ok(booking?.id, `purchase failed: ${JSON.stringify(created.body)}`);
++
++    const res = await api("POST", `/api/bookings/${booking.id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++    assert.equal(res.status, 200, JSON.stringify(res.body));
++
++    const after = await prisma.booking.findUnique({ where: { id: booking.id } });
++    assert.equal(after!.userId, bob.id, "recipient should now own the booking");
++    assert.equal(after!.status, "CONFIRMED", "status must stay CONFIRMED, not CANCELLED");
++    assert.equal(after!.ticketCode, booking.ticketCode, "ticket code must be preserved");
++    assert.equal(after!.qrCodeData, booking.qrCodeData, "QR payload must be preserved");
++    assert.equal(after!.cancelledAt, null, "transfer must not stamp cancelledAt");
++  });
++
++  await test("AT2: the ticket leaves the sender's bookings entirely (no cancelled ghost row)", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const created = await buy(alice.token, event.id);
++    const id = created.body.data.id;
++
++    await api("POST", `/api/bookings/${id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++
++    const mine = await api("GET", "/api/bookings", { token: alice.token });
++    const rows = mine.body.data.filter((b: any) => b.eventId === event.id);
++    assert.equal(rows.length, 0, `sender still sees ${rows.length} row(s): ${JSON.stringify(rows.map((r: any) => r.status))}`);
++  });
++
++  await test("AT3: the recipient sees the transferred ticket in their bookings", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const created = await buy(alice.token, event.id);
++    await api("POST", `/api/bookings/${created.body.data.id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++
++    const theirs = await api("GET", "/api/bookings", { token: bob.token });
++    const row = theirs.body.data.find((b: any) => b.eventId === event.id);
++    assert.ok(row, "recipient cannot see the ticket");
++    assert.equal(row.status, "CONFIRMED");
++  });
++
++  await test("AT6: the recipient can fetch a valid QR code for check-in", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const created = await buy(alice.token, event.id);
++    const id = created.body.data.id;
++    await api("POST", `/api/bookings/${id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++
++    const qr = await api("GET", `/api/bookings/${id}/qr`, { token: bob.token });
++    assert.equal(qr.status, 200, JSON.stringify(qr.body));
++    assert.match(qr.body.data.qrCode, /^data:image\/png;base64,/, "should return a PNG data URL");
++
++    // And the scanner accepts it.
++    const booking = await prisma.booking.findUnique({ where: { id } });
++    const scan = await api("POST", "/api/checkin", {
++      apiKey: CHECKIN_KEY,
++      body: { qrCode: booking!.qrCodeData },
++    });
++    assert.equal(scan.status, 200, `scanner rejected a transferred ticket: ${JSON.stringify(scan.body)}`);
++  });
++
++  await test("AT4: transferring to an unregistered email is rejected", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const created = await buy(alice.token, event.id);
++    const res = await api("POST", `/api/bookings/${created.body.data.id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: `nobody-${RUN}@example.test` },
++    });
++    assert.equal(res.status, 404, JSON.stringify(res.body));
++    assert.match(res.body.message, /no registered user/i);
++  });
++
++  await test("AT5: transferring a cancelled booking is rejected", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const created = await buy(alice.token, event.id);
++    const id = created.body.data.id;
++    await api("DELETE", `/api/bookings/${id}`, { token: alice.token });
++
++    const res = await api("POST", `/api/bookings/${id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++    assert.equal(res.status, 400, JSON.stringify(res.body));
++    assert.match(res.body.message, /cancelled/i);
++  });
++
++  await test("edge: cannot transfer a ticket to yourself", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const created = await buy(alice.token, event.id);
++    const res = await api("POST", `/api/bookings/${created.body.data.id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: alice.email },
++    });
++    assert.equal(res.status, 400, JSON.stringify(res.body));
++  });
++
++  await test("edge: cannot transfer to someone who already holds a ticket for the event", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const a = await buy(alice.token, event.id);
++    await buy(bob.token, event.id);
++
++    const res = await api("POST", `/api/bookings/${a.body.data.id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++    assert.equal(res.status, 409, JSON.stringify(res.body));
++  });
++
++  await test("edge: a non-owner cannot transfer someone else's ticket", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const a = await buy(alice.token, event.id);
++
++    const res = await api("POST", `/api/bookings/${a.body.data.id}/transfer`, {
++      token: carol.token,
++      body: { recipientEmail: carol.email },
++    });
++    assert.equal(res.status, 403, JSON.stringify(res.body));
++  });
++
++  console.log("\nSTORY 2 — Event waitlist\n");
++
++  await test("AT7: joining a sold-out event's waitlist returns position #1", async () => {
++    const { event } = await makeEvent({ capacity: 1 });
++    await buy(alice.token, event.id);
++
++    const res = await api("POST", "/api/waitlist", { token: bob.token, body: { eventId: event.id } });
++    assert.equal(res.status, 201, JSON.stringify(res.body));
++    assert.equal(res.body.data.position, 1);
++  });
++
++  await test("AT7: a second joiner is queued behind the first", async () => {
++    const { event } = await makeEvent({ capacity: 1 });
++    await buy(alice.token, event.id);
++    await api("POST", "/api/waitlist", { token: bob.token, body: { eventId: event.id } });
++
++    const res = await api("POST", "/api/waitlist", { token: carol.token, body: { eventId: event.id } });
++    assert.equal(res.body.data.position, 2, JSON.stringify(res.body));
++    assert.equal(res.body.data.total, 2);
++  });
++
++  await test("AT8: position is readable per-event and in the user's waitlist list", async () => {
++    const { event } = await makeEvent({ capacity: 1 });
++    await buy(alice.token, event.id);
++    await api("POST", "/api/waitlist", { token: bob.token, body: { eventId: event.id } });
++    await api("POST", "/api/waitlist", { token: carol.token, body: { eventId: event.id } });
++
++    const one = await api("GET", `/api/waitlist/${event.id}`, { token: carol.token });
++    assert.equal(one.body.data.onWaitlist, true);
++    assert.equal(one.body.data.position, 2);
++
++    const all = await api("GET", "/api/waitlist", { token: carol.token });
++    const row = all.body.data.find((e: any) => e.eventId === event.id);
++    assert.ok(row, "waitlist list should include the entry");
++    assert.equal(row.position, 2);
++  });
++
++  await test("AT10: leaving the waitlist removes the entry and shifts everyone behind up", async () => {
++    const { event } = await makeEvent({ capacity: 1 });
++    await buy(alice.token, event.id);
++    await api("POST", "/api/waitlist", { token: bob.token, body: { eventId: event.id } });
++    await api("POST", "/api/waitlist", { token: carol.token, body: { eventId: event.id } });
++
++    const left = await api("DELETE", `/api/waitlist/${event.id}`, { token: bob.token });
++    assert.equal(left.status, 200, JSON.stringify(left.body));
++
++    const gone = await api("GET", `/api/waitlist/${event.id}`, { token: bob.token });
++    assert.equal(gone.body.data.onWaitlist, false);
++    assert.equal(gone.body.data.position, null, "position must no longer be shown");
++
++    const promoted = await api("GET", `/api/waitlist/${event.id}`, { token: carol.token });
++    assert.equal(promoted.body.data.position, 1, "the person behind should move up to #1");
++  });
++
++  await test("AT9: cancelling a booking auto-promotes the front of the queue", async () => {
++    const { event } = await makeEvent({ capacity: 1, price: 250 });
++    const sale = await buy(alice.token, event.id);
++    await api("POST", "/api/waitlist", { token: carol.token, body: { eventId: event.id } });
++    await api("POST", "/api/waitlist", { token: dave.token, body: { eventId: event.id } });
++
++    const cancel = await api("DELETE", `/api/bookings/${sale.body.data.id}`, { token: alice.token });
++    assert.equal(cancel.status, 200, JSON.stringify(cancel.body));
++    assert.ok(cancel.body.data.promotedFromWaitlist, "cancel response should report the promotion");
++
++    const carolBooking = await prisma.booking.findFirst({
++      where: { userId: carol.id, eventId: event.id, status: "CONFIRMED" },
++    });
++    assert.ok(carolBooking, "front of queue should now hold a confirmed ticket");
++    assert.equal(carolBooking!.pricePaid, 250, "promoted ticket should be priced at the event price");
++
++    const stillQueued = await prisma.waitlistEntry.findFirst({
++      where: { userId: carol.id, eventId: event.id },
++    });
++    assert.equal(stillQueued, null, "promoted user must be removed from the queue");
++
++    const next = await api("GET", `/api/waitlist/${event.id}`, { token: dave.token });
++    assert.equal(next.body.data.position, 1, "the next person should move up to #1");
++
++    assert.equal(await soldCount(event.id), 1, "the seat should be held again, not double-counted");
++  });
++
++  await test("AT9: promotion respects the tier of the seat that was freed", async () => {
++    const { event, tiers } = await makeEvent({
++      capacity: 2,
++      tiers: [
++        { name: "Standard", price: 50, capacity: 1 },
++        { name: "VIP", price: 500, capacity: 1 },
++      ],
++    });
++    await buy(alice.token, event.id, tiers[0].id);
++    const vip = await buy(bob.token, event.id, tiers[1].id);
++    await api("POST", "/api/waitlist", { token: carol.token, body: { eventId: event.id } });
++
++    await api("DELETE", `/api/bookings/${vip.body.data.id}`, { token: bob.token });
++
++    const promoted = await prisma.booking.findFirst({
++      where: { userId: carol.id, eventId: event.id, status: "CONFIRMED" },
++    });
++    assert.ok(promoted, "should have been promoted");
++    assert.equal(promoted!.seatTierId, tiers[1].id, "should receive the VIP seat that actually freed");
++    assert.equal(promoted!.pricePaid, 500, "at the VIP price");
++    assert.equal(await tierSold(tiers[1].id), 1, "VIP tier should be full again");
++  });
++
++  await test("edge: cannot join the waitlist for an event that still has tickets", async () => {
++    const { event } = await makeEvent({ capacity: 5 });
++    const res = await api("POST", "/api/waitlist", { token: bob.token, body: { eventId: event.id } });
++    assert.equal(res.status, 400, JSON.stringify(res.body));
++    assert.match(res.body.message, /still available/i);
++  });
++
++  await test("edge: cannot join the same waitlist twice", async () => {
++    const { event } = await makeEvent({ capacity: 1 });
++    await buy(alice.token, event.id);
++    await api("POST", "/api/waitlist", { token: bob.token, body: { eventId: event.id } });
++
++    const res = await api("POST", "/api/waitlist", { token: bob.token, body: { eventId: event.id } });
++    assert.equal(res.status, 409, JSON.stringify(res.body));
++  });
++
++  await test("edge: a ticket holder cannot join the waitlist for their own event", async () => {
++    const { event } = await makeEvent({ capacity: 1 });
++    await buy(alice.token, event.id);
++
++    const res = await api("POST", "/api/waitlist", { token: alice.token, body: { eventId: event.id } });
++    assert.equal(res.status, 409, JSON.stringify(res.body));
++  });
++
++  await test("edge: leaving a waitlist you are not on returns 404", async () => {
++    const { event } = await makeEvent({ capacity: 1 });
++    const res = await api("DELETE", `/api/waitlist/${event.id}`, { token: dave.token });
++    assert.equal(res.status, 404, JSON.stringify(res.body));
++  });
++
++  await test("edge: a stale queue entry is skipped so the seat still reaches someone", async () => {
++    // Bob queues, then buys a ticket another way before the seat frees.
++    const { event } = await makeEvent({ capacity: 2 });
++    const a = await buy(alice.token, event.id);
++    await buy(bob.token, event.id);
++    await prisma.waitlistEntry.create({ data: { eventId: event.id, userId: bob.id, position: 1 } });
++    await prisma.waitlistEntry.create({ data: { eventId: event.id, userId: carol.id, position: 2 } });
++
++    await api("DELETE", `/api/bookings/${a.body.data.id}`, { token: alice.token });
++
++    const carolTicket = await prisma.booking.findFirst({
++      where: { userId: carol.id, eventId: event.id, status: "CONFIRMED" },
++    });
++    assert.ok(carolTicket, "seat should skip the stale entry and reach the next person");
++    const bobEntry = await prisma.waitlistEntry.findFirst({ where: { eventId: event.id, userId: bob.id } });
++    assert.equal(bobEntry, null, "the stale entry should be cleaned up");
++  });
++
++  console.log("\nREGRESSION — defects found in the existing codebase\n");
++
++  await test("R1: cancelling a NON-TIERED booking frees the seat (capacity.ts asymmetry)", async () => {
++    const { event } = await makeEvent({ capacity: 3 });
++    const sale = await buy(alice.token, event.id);
++    const before = await soldCount(event.id);
++    assert.equal(before, 1);
++
++    await api("DELETE", `/api/bookings/${sale.body.data.id}`, { token: alice.token });
++
++    assert.equal(await soldCount(event.id), 0, "event.soldCount must drop by exactly 1");
++  });
++
++  await test("R2: cancelling a TIERED booking decrements BOTH counters exactly once", async () => {
++    const { event, tiers } = await makeEvent({
++      capacity: 4,
++      tiers: [{ name: "Standard", price: 50, capacity: 4 }],
++    });
++    const sale = await buy(alice.token, event.id, tiers[0].id);
++    assert.equal(await soldCount(event.id), 1);
++    assert.equal(await tierSold(tiers[0].id), 1);
++
++    await api("DELETE", `/api/bookings/${sale.body.data.id}`, { token: alice.token });
++
++    assert.equal(await soldCount(event.id), 0, "event counter must not over- or under-shoot");
++    assert.equal(await tierSold(tiers[0].id), 0, "tier counter must not over- or under-shoot");
++  });
++
++  await test("R3: a booking that is not CONFIRMED cannot be checked in", async () => {
++    const { event } = await makeEvent({ capacity: 3 });
++    const sale = await buy(alice.token, event.id);
++    const booking = await prisma.booking.findUnique({ where: { id: sale.body.data.id } });
++
++    // A row carrying a parseable ticket QR but a non-ticket status.
++    await prisma.booking.update({ where: { id: booking!.id }, data: { status: "WAITLISTED" } });
++
++    const scan = await api("POST", "/api/checkin", {
++      apiKey: CHECKIN_KEY,
++      body: { qrCode: booking!.qrCodeData },
++    });
++    assert.equal(scan.status, 400, `scanner admitted a non-ticket: ${JSON.stringify(scan.body)}`);
++
++    const after = await prisma.booking.findUnique({ where: { id: booking!.id } });
++    assert.equal(after!.status, "WAITLISTED", "status must be unchanged by a rejected scan");
++    assert.equal(after!.checkedInAt, null);
++  });
++
++  await test("R4: a TRANSFER does not free a seat and does not trigger promotion", async () => {
++    // The Story 1 x Story 2 collision. Using the cancel+create transfer utility
++    // here would set a booking to CANCELLED, promote the queue, and oversell.
++    const { event } = await makeEvent({ capacity: 1 });
++    const sale = await buy(alice.token, event.id);
++    await api("POST", "/api/waitlist", { token: carol.token, body: { eventId: event.id } });
++
++    const before = await soldCount(event.id);
++    await api("POST", `/api/bookings/${sale.body.data.id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++
++    assert.equal(await soldCount(event.id), before, "soldCount must be unchanged by a transfer");
++
++    const carolTicket = await prisma.booking.findFirst({
++      where: { userId: carol.id, eventId: event.id, status: "CONFIRMED" },
++    });
++    assert.equal(carolTicket, null, "waitlisted user must NOT be promoted by a transfer");
++
++    const stillQueued = await api("GET", `/api/waitlist/${event.id}`, { token: carol.token });
++    assert.equal(stillQueued.body.data.position, 1, "they should still be waiting at #1");
++
++    const confirmed = await prisma.booking.count({ where: { eventId: event.id, status: "CONFIRMED" } });
++    assert.equal(confirmed, 1, "the event must not be oversold");
++  });
++
++  await test("R5: a transfer leaves no CANCELLED row to inflate refund reporting", async () => {
++    const { event } = await makeEvent({ capacity: 3 });
++    const sale = await buy(alice.token, event.id);
++    await api("POST", `/api/bookings/${sale.body.data.id}/transfer`, {
++      token: alice.token,
++      body: { recipientEmail: bob.email },
++    });
++
++    const cancelled = await prisma.booking.count({ where: { eventId: event.id, status: "CANCELLED" } });
++    assert.equal(cancelled, 0, "a transfer must not create a cancelled booking");
++  });
++
++  // --- teardown ------------------------------------------------------------
++
++  const testUsers = await prisma.user.findMany({
++    where: { email: { startsWith: `t-${RUN}-` } },
++    select: { id: true },
++  });
++  const ids = testUsers.map((u) => u.id);
++  const testEvents = await prisma.event.findMany({
++    where: { name: { startsWith: `Test Event ${RUN}` } },
++    select: { id: true },
++  });
++  const eventIds = testEvents.map((e) => e.id);
++
++  await prisma.waitlistEntry.deleteMany({ where: { OR: [{ userId: { in: ids } }, { eventId: { in: eventIds } }] } });
++  await prisma.booking.deleteMany({ where: { OR: [{ userId: { in: ids } }, { eventId: { in: eventIds } }] } });
++  await prisma.seatTier.deleteMany({ where: { eventId: { in: eventIds } } });
++  await prisma.event.deleteMany({ where: { id: { in: eventIds } } });
++  await prisma.user.deleteMany({ where: { id: { in: ids } } });
++
++  console.log(`\n${"=".repeat(60)}`);
++  console.log(`  ${passed} passed, ${failed} failed`);
++  console.log("=".repeat(60));
++  if (failures.length) {
++    console.log("\nFailures:\n");
++    failures.forEach((f) => console.log(`  - ${f}\n`));
++  }
++  process.exitCode = failed === 0 ? 0 : 1;
++}
++
++main()
++  .catch((e) => {
++    console.error(e);
++    process.exitCode = 1;
++  })
++  .finally(async () => {
++    await prisma.$disconnect();
++  });
+diff --git a/frontend/src/app/bookings/page.tsx b/frontend/src/app/bookings/page.tsx
+index af86cc6..1f0adc6 100644
+--- a/frontend/src/app/bookings/page.tsx
++++ b/frontend/src/app/bookings/page.tsx
+@@ -3,9 +3,9 @@
+ import { useEffect, useState } from "react";
+ import { useRouter } from "next/navigation";
+ import Link from "next/link";
+-import { Booking, RefundBreakdown } from "@/types";
++import { Booking, RefundBreakdown, WaitlistEntry } from "@/types";
+ import { useAuth } from "@/contexts/AuthContext";
+-import { bookingsAPI } from "@/lib/api";
++import { bookingsAPI, waitlistAPI } from "@/lib/api";
+ import { formatDate, formatTime, formatCurrency } from "@/lib/utils";
+ import { Card, CardContent } from "@/components/ui/Card";
+ import { Badge } from "@/components/ui/Badge";
+@@ -26,6 +26,9 @@ export default function BookingsPage() {
+   const [refundPreview, setRefundPreview] = useState<RefundBreakdown | null>(null);
+   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+   const [cancelSuccess, setCancelSuccess] = useState("");
++  const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
++  const [leavingId, setLeavingId] = useState<string | null>(null);
++  const [waitlistMessage, setWaitlistMessage] = useState("");
+ 
+   useEffect(() => {
+     if (authLoading) return;
+@@ -34,13 +37,29 @@ export default function BookingsPage() {
+       return;
+     }
+ 
+-    bookingsAPI
+-      .list(token)
+-      .then((res) => setBookings(res.data))
++    Promise.all([bookingsAPI.list(token), waitlistAPI.list(token)])
++      .then(([bookingsRes, waitlistRes]) => {
++        setBookings(bookingsRes.data);
++        setWaitlist(waitlistRes.data);
++      })
+       .catch((err) => setError(err.message))
+       .finally(() => setIsLoading(false));
+   }, [user, token, authLoading, router]);
+ 
++  const handleLeaveWaitlist = async (eventId: string) => {
++    if (!token) return;
++    setLeavingId(eventId);
++    try {
++      await waitlistAPI.leave(token, eventId);
++      setWaitlist((entries) => entries.filter((e) => e.eventId !== eventId));
++      setWaitlistMessage("You have left the waitlist. Your position is no longer held.");
++    } catch (err) {
++      setError(err instanceof Error ? err.message : "Failed to leave the waitlist");
++    } finally {
++      setLeavingId(null);
++    }
++  };
++
+   // Fetch refund preview when cancel modal opens
+   useEffect(() => {
+     if (!cancelId || !token) {
+@@ -62,10 +81,14 @@ export default function BookingsPage() {
+     try {
+       const res = await bookingsAPI.cancel(token, cancelId);
+       setBookings(bookings.map((b) => (b.id === cancelId ? { ...b, status: "CANCELLED" } : b)));
+-      setCancelSuccess(
++      const refundNote =
+         res.data.refundAmount > 0
+           ? `Booking cancelled. Refund of ${formatCurrency(res.data.refundAmount)} will be processed.`
+-          : "Booking cancelled successfully."
++          : "Booking cancelled successfully.";
++      setCancelSuccess(
++        res.data.promotedFromWaitlist
++          ? `${refundNote} The freed seat went to ${res.data.promotedFromWaitlist.attendee} from the waitlist.`
++          : refundNote
+       );
+       setCancelId(null);
+     } catch (err) {
+@@ -84,6 +107,7 @@ export default function BookingsPage() {
+       case "CONFIRMED": return <Badge variant="success">Confirmed</Badge>;
+       case "CHECKED_IN": return <Badge variant="info">Checked In</Badge>;
+       case "CANCELLED": return <Badge variant="danger">Cancelled</Badge>;
++      case "WAITLISTED": return <Badge variant="warning">Waitlisted</Badge>;
+       default: return <Badge>{status}</Badge>;
+     }
+   };
+@@ -94,8 +118,48 @@ export default function BookingsPage() {
+ 
+       {error && <Alert variant="error" className="mb-4">{error}</Alert>}
+       {cancelSuccess && <Alert variant="success" className="mb-4">{cancelSuccess}</Alert>}
++      {waitlistMessage && <Alert variant="info" className="mb-4">{waitlistMessage}</Alert>}
++
++      {waitlist.length > 0 && (
++        <div className="mb-8">
++          <h2 className="text-xl font-semibold text-gray-900 mb-3">On the Waitlist</h2>
++          <div className="space-y-3">
++            {waitlist.map((entry) => (
++              <Card key={entry.id}>
++                <CardContent className="flex items-center gap-4">
++                  <div className="flex-shrink-0 w-16 h-16 rounded-lg bg-amber-50 border-2 border-amber-200 flex flex-col items-center justify-center">
++                    <span className="text-xs text-amber-700 uppercase tracking-wide">Pos</span>
++                    <span className="text-2xl font-bold text-amber-700">#{entry.position}</span>
++                  </div>
++
++                  <div className="flex-1 min-w-0">
++                    <h3 className="text-lg font-semibold text-gray-900 truncate">{entry.event?.name}</h3>
++                    <p className="text-sm text-gray-600 mt-1">
++                      {entry.event && formatDate(entry.event.date)} at {entry.event && formatTime(entry.event.time)}
++                    </p>
++                    <p className="text-sm text-gray-500">{entry.event?.venue}</p>
++                    <p className="text-sm text-amber-700 font-medium mt-1">
++                      You are #{entry.position} of {entry.total} on the waitlist. You will get a ticket
++                      automatically if one frees up.
++                    </p>
++                  </div>
++
++                  <Button
++                    size="sm"
++                    variant="secondary"
++                    onClick={() => handleLeaveWaitlist(entry.eventId)}
++                    isLoading={leavingId === entry.eventId}
++                  >
++                    Leave Waitlist
++                  </Button>
++                </CardContent>
++              </Card>
++            ))}
++          </div>
++        </div>
++      )}
+ 
+-      {bookings.length === 0 ? (
++      {bookings.length === 0 && waitlist.length === 0 ? (
+         <div className="text-center py-12">
+           <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+diff --git a/frontend/src/app/events/[id]/page.tsx b/frontend/src/app/events/[id]/page.tsx
+index c86b9dc..e5f3398 100644
+--- a/frontend/src/app/events/[id]/page.tsx
++++ b/frontend/src/app/events/[id]/page.tsx
+@@ -2,9 +2,9 @@
+ 
+ import { useEffect, useState } from "react";
+ import { useParams, useRouter } from "next/navigation";
+-import { Event, SeatTier } from "@/types";
++import { Event, SeatTier, WaitlistStatus } from "@/types";
+ import { useAuth } from "@/contexts/AuthContext";
+-import { eventsAPI, bookingsAPI, promoCodesAPI } from "@/lib/api";
++import { eventsAPI, bookingsAPI, promoCodesAPI, waitlistAPI } from "@/lib/api";
+ import { formatDate, formatTime, formatCurrency } from "@/lib/utils";
+ import { Card, CardContent } from "@/components/ui/Card";
+ import { Badge } from "@/components/ui/Badge";
+@@ -30,6 +30,10 @@ export default function EventPage() {
+   const [promoDiscount, setPromoDiscount] = useState<{ type: string; value: number } | null>(null);
+   const [promoError, setPromoError] = useState("");
+   const [isValidatingPromo, setIsValidatingPromo] = useState(false);
++  const [waitlist, setWaitlist] = useState<WaitlistStatus | null>(null);
++  const [isJoining, setIsJoining] = useState(false);
++  const [waitlistError, setWaitlistError] = useState("");
++  const [waitlistMessage, setWaitlistMessage] = useState("");
+ 
+   useEffect(() => {
+     eventsAPI
+@@ -39,6 +43,56 @@ export default function EventPage() {
+       .finally(() => setIsLoading(false));
+   }, [params.id]);
+ 
++  // Only meaningful once we know the user — an anonymous visitor has no place
++  // in the queue to report.
++  useEffect(() => {
++    if (!token || !params.id) return;
++    waitlistAPI
++      .status(token, params.id as string)
++      .then((res) => setWaitlist(res.data))
++      .catch(() => setWaitlist(null));
++  }, [token, params.id]);
++
++  const handleJoinWaitlist = async () => {
++    if (!token) {
++      router.push(`/login?callbackUrl=/events/${params.id}`);
++      return;
++    }
++    setIsJoining(true);
++    setWaitlistError("");
++    try {
++      const res = await waitlistAPI.join(token, params.id as string);
++      setWaitlist({
++        eventId: params.id as string,
++        onWaitlist: true,
++        position: res.data.position,
++        total: res.data.total,
++      });
++      setWaitlistMessage(
++        `You're on the waitlist at position #${res.data.position}. If a ticket frees up it will be issued to you automatically.`
++      );
++    } catch (err) {
++      setWaitlistError(err instanceof Error ? err.message : "Failed to join the waitlist");
++    } finally {
++      setIsJoining(false);
++    }
++  };
++
++  const handleLeaveWaitlist = async () => {
++    if (!token) return;
++    setIsJoining(true);
++    setWaitlistError("");
++    try {
++      await waitlistAPI.leave(token, params.id as string);
++      setWaitlist({ eventId: params.id as string, onWaitlist: false, position: null, total: 0 });
++      setWaitlistMessage("You have left the waitlist.");
++    } catch (err) {
++      setWaitlistError(err instanceof Error ? err.message : "Failed to leave the waitlist");
++    } finally {
++      setIsJoining(false);
++    }
++  };
++
+   const handlePurchase = () => {
+     if (!user) {
+       router.push(`/login?callbackUrl=/events/${params.id}`);
+@@ -110,6 +164,9 @@ export default function EventPage() {
+     : event.soldCount >= event.capacity;
+   const isPastEvent = new Date(event.date) < new Date();
+   const isDisabled = isSoldOut || isCancelled || isPastEvent;
++  // A waitlist is only offered where a seat could still realistically free up:
++  // the event is sold out but has neither been cancelled nor already happened.
++  const canWaitlist = isSoldOut && !isCancelled && !isPastEvent;
+ 
+   return (
+     <div className="container py-8">
+@@ -269,10 +326,43 @@ export default function EventPage() {
+               )}
+ 
+               {purchaseError && <Alert variant="error">{purchaseError}</Alert>}
++              {waitlistError && <Alert variant="error">{waitlistError}</Alert>}
++              {waitlistMessage && <Alert variant="success">{waitlistMessage}</Alert>}
+ 
+-              <Button className="w-full" size="lg" disabled={isDisabled} onClick={handlePurchase}>
+-                {isCancelled ? "Event Cancelled" : isSoldOut ? "Sold Out" : isPastEvent ? "Event Ended" : "Buy Ticket"}
+-              </Button>
++              {canWaitlist ? (
++                waitlist?.onWaitlist ? (
++                  <div className="space-y-3">
++                    <div className="rounded-lg border-2 border-amber-200 bg-amber-50 p-4 text-center">
++                      <p className="text-sm text-amber-700 uppercase tracking-wide">Your waitlist position</p>
++                      <p className="text-4xl font-bold text-amber-700">#{waitlist.position}</p>
++                      <p className="text-sm text-amber-700 mt-1">of {waitlist.total} waiting</p>
++                    </div>
++                    <Button
++                      className="w-full"
++                      size="lg"
++                      variant="secondary"
++                      onClick={handleLeaveWaitlist}
++                      isLoading={isJoining}
++                    >
++                      Leave Waitlist
++                    </Button>
++                  </div>
++                ) : (
++                  <>
++                    <Button className="w-full" size="lg" onClick={handleJoinWaitlist} isLoading={isJoining}>
++                      Join Waitlist
++                    </Button>
++                    <p className="text-center text-sm text-gray-500">
++                      This event is sold out. Join the waitlist and you&apos;ll get a ticket automatically
++                      if someone cancels.
++                    </p>
++                  </>
++                )
++              ) : (
++                <Button className="w-full" size="lg" disabled={isDisabled} onClick={handlePurchase}>
++                  {isCancelled ? "Event Cancelled" : isSoldOut ? "Sold Out" : isPastEvent ? "Event Ended" : "Buy Ticket"}
++                </Button>
++              )}
+ 
+               {isPastEvent && !isCancelled && <p className="text-center text-sm text-gray-500">This event has ended</p>}
+             </CardContent>
+diff --git a/frontend/src/app/tickets/[id]/page.tsx b/frontend/src/app/tickets/[id]/page.tsx
+index 6df1258..b9e05f8 100644
+--- a/frontend/src/app/tickets/[id]/page.tsx
++++ b/frontend/src/app/tickets/[id]/page.tsx
+@@ -8,6 +8,8 @@ import { bookingsAPI } from "@/lib/api";
+ import { formatDate, formatTime, formatCurrency } from "@/lib/utils";
+ import { Card, CardContent } from "@/components/ui/Card";
+ import { Button } from "@/components/ui/Button";
++import { Input } from "@/components/ui/Input";
++import { Modal } from "@/components/ui/Modal";
+ import { Spinner } from "@/components/ui/Spinner";
+ import { Alert } from "@/components/ui/Alert";
+ 
+@@ -21,6 +23,12 @@ export default function TicketPage() {
+   const [isLoading, setIsLoading] = useState(true);
+   const [error, setError] = useState("");
+ 
++  const [showTransfer, setShowTransfer] = useState(false);
++  const [recipientEmail, setRecipientEmail] = useState("");
++  const [isTransferring, setIsTransferring] = useState(false);
++  const [transferError, setTransferError] = useState("");
++  const [transferSuccess, setTransferSuccess] = useState("");
++
+   useEffect(() => {
+     if (authLoading) return;
+     if (!user || !token) {
+@@ -28,37 +36,96 @@ export default function TicketPage() {
+       return;
+     }
+ 
+-    Promise.all([
+-      bookingsAPI.get(token, params.id as string),
+-      bookingsAPI.getQR(token, params.id as string),
+-    ])
+-      .then(([bookingRes, qrRes]) => {
++    // Fetch the booking first, then the QR only if it is still a live ticket.
++    // The QR endpoint rejects non-CONFIRMED bookings, so requesting both in
++    // parallel would blank the whole page for a cancelled or transferred
++    // ticket instead of explaining what happened.
++    bookingsAPI
++      .get(token, params.id as string)
++      .then(async (bookingRes) => {
+         setBooking(bookingRes.data);
+-        setQrCode(qrRes.data.qrCode);
++        if (bookingRes.data.status === "CONFIRMED") {
++          const qrRes = await bookingsAPI.getQR(token, params.id as string);
++          setQrCode(qrRes.data.qrCode);
++        }
+       })
+       .catch((err) => setError(err.message))
+       .finally(() => setIsLoading(false));
+   }, [user, token, authLoading, router, params.id]);
+ 
++  const handleTransfer = async () => {
++    if (!token || !recipientEmail.trim()) return;
++    setIsTransferring(true);
++    setTransferError("");
++
++    try {
++      const res = await bookingsAPI.transfer(token, params.id as string, recipientEmail.trim());
++      setShowTransfer(false);
++      setTransferSuccess(
++        `Ticket transferred to ${res.data.user?.email ?? recipientEmail.trim()}. It is no longer in your bookings.`
++      );
++      setBooking(null);
++      setQrCode(null);
++    } catch (err) {
++      setTransferError(err instanceof Error ? err.message : "Failed to transfer ticket");
++    } finally {
++      setIsTransferring(false);
++    }
++  };
++
+   if (authLoading || isLoading) {
+     return <div className="flex items-center justify-center min-h-[50vh]"><Spinner size="lg" /></div>;
+   }
+ 
++  // The ticket has just left this account — the booking now belongs to someone
++  // else, so there is nothing left to show here.
++  if (transferSuccess) {
++    return (
++      <div className="container py-8">
++        <div className="max-w-md mx-auto space-y-4">
++          <Alert variant="success">{transferSuccess}</Alert>
++          <Button className="w-full" onClick={() => router.push("/bookings")}>
++            Back to Bookings
++          </Button>
++        </div>
++      </div>
++    );
++  }
++
+   if (error || !booking) {
+     return <div className="container py-8 text-center text-red-600">{error || "Ticket not found"}</div>;
+   }
+ 
++  // Not a live ticket. Still render a transfer panel, in a disabled state that
++  // says why, rather than hiding the action and leaving the reason unexplained.
+   if (booking.status !== "CONFIRMED") {
+     return (
+       <div className="container py-8">
+-        <Alert variant="warning">This ticket is no longer valid. Status: {booking.status}</Alert>
++        <div className="max-w-md mx-auto space-y-4">
++          <Alert variant="warning">This ticket is no longer valid. Status: {booking.status}</Alert>
++          <Card>
++            <CardContent className="space-y-3">
++              <h2 className="text-lg font-semibold text-gray-900">Transfer Ticket</h2>
++              <Alert variant="error">
++                {booking.status === "CANCELLED"
++                  ? "This booking has been cancelled and can no longer be transferred."
++                  : `A booking with status ${booking.status} cannot be transferred.`}
++              </Alert>
++              <Input placeholder="Recipient's email address" disabled />
++              <Button className="w-full" disabled>Transfer Ticket</Button>
++            </CardContent>
++          </Card>
++          <Button variant="ghost" className="w-full" onClick={() => router.push("/bookings")}>
++            Back to Bookings
++          </Button>
++        </div>
+       </div>
+     );
+   }
+ 
+   return (
+     <div className="container py-8">
+-      <div className="max-w-md mx-auto">
++      <div className="max-w-md mx-auto space-y-6">
+         <Card>
+           <CardContent className="text-center space-y-6 py-8">
+             <div>
+@@ -117,7 +184,90 @@ export default function TicketPage() {
+             </div>
+           </CardContent>
+         </Card>
++
++        <Card>
++          <CardContent className="space-y-3">
++            <h2 className="text-lg font-semibold text-gray-900">Transfer Ticket</h2>
++            <p className="text-sm text-gray-600">
++              Can&apos;t make it? Hand this ticket to another registered user. The transfer is
++              immediate and cannot be undone.
++            </p>
++            <Button
++              variant="secondary"
++              className="w-full"
++              onClick={() => {
++                setTransferError("");
++                setRecipientEmail("");
++                setShowTransfer(true);
++              }}
++            >
++              Transfer Ticket
++            </Button>
++          </CardContent>
++        </Card>
+       </div>
++
++      <Modal isOpen={showTransfer} onClose={() => setShowTransfer(false)} title="Transfer Ticket">
++        <div className="space-y-4">
++          {transferError && <Alert variant="error">{transferError}</Alert>}
++
++          <div>
++            <label htmlFor="recipientEmail" className="block text-sm font-medium text-gray-700 mb-1">
++              Recipient&apos;s email address
++            </label>
++            <Input
++              id="recipientEmail"
++              type="email"
++              placeholder="name@example.com"
++              value={recipientEmail}
++              onChange={(e) => {
++                setRecipientEmail(e.target.value);
++                setTransferError("");
++              }}
++            />
++            <p className="mt-1 text-xs text-gray-500">
++              They must already have an account on the platform.
++            </p>
++          </div>
++
++          <div className="bg-gray-50 rounded-lg p-4 space-y-1 text-sm">
++            <div className="flex justify-between">
++              <span className="text-gray-500">Event</span>
++              <span className="font-medium">{booking.event?.name}</span>
++            </div>
++            <div className="flex justify-between">
++              <span className="text-gray-500">Ticket</span>
++              <span className="font-mono font-medium">
++                {booking.ticketCode.slice(0, 8).toUpperCase()}
++              </span>
++            </div>
++          </div>
++
++          <p className="text-sm text-gray-600">
++            You will lose access to this ticket immediately. No refund is issued — this is an
++            ownership change, not a cancellation.
++          </p>
++
++          <div className="flex space-x-3">
++            <Button
++              variant="secondary"
++              className="flex-1"
++              onClick={() => setShowTransfer(false)}
++              disabled={isTransferring}
++            >
++              Cancel
++            </Button>
++            <Button
++              className="flex-1"
++              onClick={handleTransfer}
++              isLoading={isTransferring}
++              disabled={!recipientEmail.trim()}
++            >
++              Confirm Transfer
++            </Button>
++          </div>
++        </div>
++      </Modal>
+     </div>
+   );
+ }
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index 8d02806..38f0f6e 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -180,9 +180,20 @@ export const bookingsAPI = {
+     fetchAPI<{
+       success: boolean;
+       message: string;
+-      data: { refundAmount: number; refundPercentage: number; serviceFee: number };
++      data: {
++        refundAmount: number;
++        refundPercentage: number;
++        serviceFee: number;
++        promotedFromWaitlist: { bookingId: string; attendee: string } | null;
++      };
+     }>(`/api/bookings/${id}`, { method: "DELETE", token }),
+ 
++  transfer: (token: string, id: string, recipientEmail: string) =>
++    fetchAPI<{ success: boolean; message: string; data: import("@/types").Booking }>(
++      `/api/bookings/${id}/transfer`,
++      { method: "POST", body: JSON.stringify({ recipientEmail }), token }
++    ),
++
+   getRefundPreview: (token: string, id: string) =>
+     fetchAPI<{ success: boolean; data: import("@/types").RefundBreakdown }>(`/api/bookings/${id}/refund-preview`, {
+       token,
+@@ -192,6 +203,27 @@ export const bookingsAPI = {
+     fetchAPI<{ success: boolean; data: { qrCode: string; ticketCode: string } }>(`/api/bookings/${id}/qr`, { token }),
+ };
+ 
++// Waitlist API
++export const waitlistAPI = {
++  join: (token: string, eventId: string) =>
++    fetchAPI<{ success: boolean; message: string; data: import("@/types").WaitlistEntry }>(
++      "/api/waitlist",
++      { method: "POST", body: JSON.stringify({ eventId }), token }
++    ),
++
++  list: (token: string) =>
++    fetchAPI<{ success: boolean; data: import("@/types").WaitlistEntry[] }>("/api/waitlist", { token }),
++
++  status: (token: string, eventId: string) =>
++    fetchAPI<{ success: boolean; data: import("@/types").WaitlistStatus }>(`/api/waitlist/${eventId}`, { token }),
++
++  leave: (token: string, eventId: string) =>
++    fetchAPI<{ success: boolean; message: string }>(`/api/waitlist/${eventId}`, {
++      method: "DELETE",
++      token,
++    }),
++};
++
+ // Dashboard API
+ export const dashboardAPI = {
+   getStats: (token: string) =>
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 449d3f5..11f5b79 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -103,10 +103,42 @@ export interface Booking {
+     discountType: string;
+     discountValue: number;
+   } | null;
++  // Included by endpoints that change ownership (transfer, organizer reassign)
++  // so the caller can confirm who now holds the ticket.
++  user?: {
++    id: string;
++    name: string;
++    email: string;
++  };
+   createdAt: string;
+   updatedAt: string;
+ }
+ 
++export interface WaitlistEntry {
++  id: string;
++  eventId: string;
++  position: number | null;
++  total: number;
++  joinedAt?: string;
++  event?: {
++    id: string;
++    name: string;
++    date: string;
++    time: string;
++    venue: string;
++    imageUrl: string | null;
++    status: EventStatus;
++    category?: EventCategory;
++  };
++}
++
++export interface WaitlistStatus {
++  eventId: string;
++  onWaitlist: boolean;
++  position: number | null;
++  total: number;
++}
++
+ export interface RefundBreakdown {
+   pricePaid: number;
+   daysUntilEvent: number;
+@@ -150,6 +182,7 @@ export interface DashboardStats {
+   totalRefundCount: number;
+   totalCheckedIn: number;
+   attendanceRate: number;
++  waitlistedCount: number;
+   categoryBreakdown: Record<string, { events: number; tickets: number; revenue: number }>;
+   recentSales: { date: string; count: number; revenue: number }[];
+ }

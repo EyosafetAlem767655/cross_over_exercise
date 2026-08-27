@@ -33,3 +33,6 @@ npx tsc --noEmit && cd ../frontend && npx tsc --noEmit
 
 Then follow [`SUBMISSION_GUIDE.md`](./SUBMISSION_GUIDE.md). **Delete this `debug/` folder
 before submitting** — the submitter excludes `*.patch` but not `.md`.
+
+> `implementation.patch` is force-added to this repo: the root `.gitignore` carries a
+> `*.patch` rule, so a plain `git add` silently skips it.
