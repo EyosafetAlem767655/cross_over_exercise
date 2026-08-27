@@ -23,10 +23,13 @@ can never fire. See Finding 1.
 ## Applying the patch
 
 ```bash
-git apply --stat  debug/fixes.patch   # preview
-git apply --check debug/fixes.patch   # dry run
-git apply         debug/fixes.patch   # apply
+git apply --stat  debug/implementation.patch   # preview
+git apply --check debug/implementation.patch   # dry run
+git apply         debug/implementation.patch   # apply
 
-cd backend && npx prisma db push && npm run db:seed   # re-seed: seed.ts changed
-npx tsc --noEmit                                      # clean
+cd backend && npx prisma db push && npm run db:seed   # schema + seed changed
+npx tsc --noEmit && cd ../frontend && npx tsc --noEmit
 ```
+
+Then follow [`SUBMISSION_GUIDE.md`](./SUBMISSION_GUIDE.md). **Delete this `debug/` folder
+before submitting** — the submitter excludes `*.patch` but not `.md`.
